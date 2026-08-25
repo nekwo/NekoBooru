@@ -33,12 +33,78 @@ async def _tag_media_async(path: Path, opts: AutoTagOptions):
     return await asyncio.to_thread(tag_media, path, opts)
 
 
+async def _inherit_tags_from_similar(
+    db, phash: str, exclude_id: int | None, opts: AutoTagOptions, owner_id: int | None = None
+) -> tuple[list[str], dict]:
+    """Return (tags, evidence) from library posts with a near-identical perceptual hash.
+
+    Uses a linear scan of stored phashes (fine for a personal library). Only
+    posts that already have >= inheritSimilarMinTags human-curated tags
+    contribute, so fresh untagged entries can't pollute the inheritance pool.
+
+    ``owner_id`` restricts the candidate pool to that user's own posts - tag
+    inheritance must stay inside one library, never pull from another user's
+    private (or merely shared-with-you) posts.
+    """
+    try:
+        target_int = int(phash, 16)
+    except (TypeError, ValueError):
+        return [], {}
+
+    conditions = [
+        Post.phash.is_not(None),
+        Post.phash != "",
+        Post.deleted_at.is_(None),
+    ]
+    if exclude_id is not None:
+        conditions.append(Post.id != exclude_id)
+    if owner_id is not None:
+        conditions.append(Post.owner_id == owner_id)
+
+    rows = (
+        await db.execute(
+            select(Post).options(selectinload(Post.tags)).where(*conditions)
+        )
+    ).scalars().all()
+
+    max_dist = opts.inheritSimilarMaxDistance
+    min_tags = opts.inheritSimilarMinTags
+    tag_votes: dict[str, int] = {}
+    matched: list[dict] = []
+
+    for post in rows:
+        try:
+            dist = bin(target_int ^ int(post.phash, 16)).count("1")
+        except (TypeError, ValueError):
+            continue
+        if dist > max_dist:
+            continue
+        post_tag_names = [t.name for t in (post.tags or [])]
+        if len(post_tag_names) < min_tags:
+            continue
+        matched.append({"id": post.id, "distance": dist, "tagCount": len(post_tag_names)})
+        for name in post_tag_names:
+            tag_votes[name] = tag_votes.get(name, 0) + 1
+
+    if not matched:
+        return [], {"kind": "similar_posts", "matchedPosts": 0}
+
+    inherited = [t for t, _ in sorted(tag_votes.items(), key=lambda x: -x[1])]
+    evidence = {
+        "kind": "similar_posts",
+        "matchedPosts": len(matched),
+        "posts": sorted(matched, key=lambda x: x["distance"])[:5],
+    }
+    return inherited, evidence
+
+
 async def create_job(
     *,
     mode: str,
     dry_run: bool = True,
     post_ids: list[int] | None = None,
     overrides: dict | None = None,
+    owner_id: int,
 ) -> AutoTagJob:
     if active_task_running():
         raise RuntimeError("auto-tag job already running")
@@ -46,7 +112,7 @@ async def create_job(
     raw = {**base.__dict__, **(overrides or {})}
     opts = validate_options(raw)
     async with async_session() as db:
-        candidates = await candidate_post_ids(db, mode=mode, opts=opts, post_ids=post_ids)
+        candidates = await candidate_post_ids(db, mode=mode, opts=opts, post_ids=post_ids, owner_id=owner_id)
         # A non-dry-run job rewrites tags/safety on every candidate, which is
         # destructive and irreversible. Snapshot the DB first so a bad bulk run
         # (e.g. auto-tagging the whole library) can be restored.
@@ -58,6 +124,7 @@ async def create_job(
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"could not create pre-auto-tag backup: {exc}")
         job = AutoTagJob(
+            owner_id=owner_id,
             status="queued",
             mode=mode,
             dry_run=dry_run,
@@ -72,8 +139,13 @@ async def create_job(
         return job
 
 
-async def candidate_post_ids(db, *, mode: str, opts: AutoTagOptions, post_ids: list[int] | None = None) -> list[int]:
-    stmt = select(Post.id).where(Post.deleted_at.is_(None))
+async def candidate_post_ids(
+    db, *, mode: str, opts: AutoTagOptions, post_ids: list[int] | None = None, owner_id: int
+) -> list[int]:
+    # Bulk jobs only ever touch the initiating user's own posts - the queued
+    # slot itself is a shared, instance-wide hardware resource (see
+    # active_task_running above), but the content it processes is not.
+    stmt = select(Post.id).where(Post.deleted_at.is_(None), Post.owner_id == owner_id)
     if mode == "selected":
         stmt = stmt.where(Post.id.in_(post_ids or []))
     elif mode == "images":
@@ -98,10 +170,10 @@ async def candidate_post_ids(db, *, mode: str, opts: AutoTagOptions, post_ids: l
     return [int(row[0]) for row in rows.all()]
 
 
-async def estimate(mode: str, overrides: dict | None = None) -> dict:
+async def estimate(mode: str, owner_id: int, overrides: dict | None = None) -> dict:
     opts = validate_options({**load_options().__dict__, **(overrides or {})})
     async with async_session() as db:
-        ids = await candidate_post_ids(db, mode=mode, opts=opts)
+        ids = await candidate_post_ids(db, mode=mode, opts=opts, owner_id=owner_id)
         if not ids:
             return {"total": 0, "images": 0, "videos": 0, "gifs": 0}
         rows = await db.execute(select(Post.extension).where(Post.id.in_(ids)))
@@ -181,6 +253,19 @@ async def analyze_and_maybe_apply(db, post: Post, *, opts: AutoTagOptions, job: 
     from ..config import settings
     full_path = settings.posts_dir / post.content_path
     result = await _tag_media_async(full_path, opts)
+
+    if opts.inheritSimilarTags and post.phash:
+        inherited_tags, inherited_evidence = await _inherit_tags_from_similar(
+            db, post.phash, post.id, opts, owner_id=post.owner_id
+        )
+        if inherited_tags:
+            existing_set = set(result.tags)
+            result.tags.extend(t for t in inherited_tags if t not in existing_set)
+            for tag in inherited_tags:
+                if tag not in result.categories:
+                    result.categories[tag] = "general"
+            result.evidence = {**(result.evidence or {}), "similarPosts": inherited_evidence}
+
     existing_tags = [tag.name for tag in (post.tags or [])]
     merged_tags, categories = merge_with_existing(existing_tags, result, opts)
     suggested_safety = promote_safety(post.safety or "safe", result.safety, opts)
@@ -222,6 +307,19 @@ async def preview_post(post_id: int, overrides: dict | None = None) -> dict:
             raise ValueError("post not found")
         from ..config import settings
         result = await _tag_media_async(settings.posts_dir / post.content_path, opts)
+
+        if opts.inheritSimilarTags and post.phash:
+            inherited_tags, inherited_evidence = await _inherit_tags_from_similar(
+                db, post.phash, post.id, opts, owner_id=post.owner_id
+            )
+            if inherited_tags:
+                existing_set = set(result.tags)
+                result.tags.extend(t for t in inherited_tags if t not in existing_set)
+                for tag in inherited_tags:
+                    if tag not in result.categories:
+                        result.categories[tag] = "general"
+                result.evidence = {**(result.evidence or {}), "similarPosts": inherited_evidence}
+
         existing_tags = [tag.name for tag in (post.tags or [])]
         merged_tags, categories = merge_with_existing(existing_tags, result, opts)
         return {
@@ -253,7 +351,7 @@ async def apply_post(
     async with async_session() as db:
         post = (
             await db.execute(
-                select(Post).options(selectinload(Post.tags).selectinload(Tag.category), selectinload(Post.favorite)).where(Post.id == post_id, Post.deleted_at.is_(None))
+                select(Post).options(selectinload(Post.tags).selectinload(Tag.category), selectinload(Post.favorites)).where(Post.id == post_id, Post.deleted_at.is_(None))
             )
         ).scalars().first()
         if not post:
@@ -276,7 +374,7 @@ async def apply_post(
             elif generated_preview:
                 await save_analysis_from_result(db, post.id, generated_preview, opts=opts, profile=profile or "post")
         await db.commit()
-        await db.refresh(post, ["tags", "favorite"])
+        await db.refresh(post, ["tags", "favorites"])
         return post.to_dict()
 
 
@@ -320,7 +418,7 @@ async def apply_job_suggestions(job_id: int) -> dict:
             post = (
                 await db.execute(
                     select(Post)
-                    .options(selectinload(Post.tags).selectinload(Tag.category), selectinload(Post.favorite))
+                    .options(selectinload(Post.tags).selectinload(Tag.category), selectinload(Post.favorites))
                     .where(Post.id == suggestion.post_id, Post.deleted_at.is_(None))
                 )
             ).scalars().first()

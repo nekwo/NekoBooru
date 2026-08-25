@@ -342,6 +342,9 @@ class AutoTagOptions:
     remoteTimeoutSeconds: int = 120
     excludedTags: list[str] = field(default_factory=list)
     keywordRules: list[dict] = field(default_factory=list)
+    inheritSimilarTags: bool = True
+    inheritSimilarMaxDistance: int = 8
+    inheritSimilarMinTags: int = 1
 
 
 @dataclass
@@ -2185,6 +2188,8 @@ def validate_options(raw: dict) -> AutoTagOptions:
         data["excludedTags"] = []
     if not isinstance(data["keywordRules"], list):
         data["keywordRules"] = []
+    data["inheritSimilarMaxDistance"] = min(64, max(0, int(data.get("inheritSimilarMaxDistance") or 8)))
+    data["inheritSimilarMinTags"] = min(50, max(0, int(data.get("inheritSimilarMinTags") or 1)))
     return AutoTagOptions(**data)
 
 
@@ -3273,11 +3278,21 @@ def _mark_download_job_cancelled_locked(message: str = "Model download cancelled
 def download_model() -> dict:
     job = start_model_download(["wd"])
     return {
+        "enabled": opts.enabled,
         "model": _wd_tagger.name,
         "modelId": WD_MODEL_ID,
-        "downloaded": model_cache_status("wd")["downloaded"],
-        "loaded": _wd_tagger.is_loaded(),
-        "job": job,
+        "modelLoaded": _wd_tagger.is_loaded(),
+        "modelDownloaded": model_cache["downloaded"],
+        "modelFiles": model_cache["files"],
+        "models": model_statuses(),
+        "downloadJob": current_download_job(),
+        "loadJob": current_model_load_job(),
+        "torch": _torch_runtime_info(),
+        "onnx": _onnx_runtime_info(),
+        "torchDevice": opts.torchDevice,
+        "qwenDevice": _semantic_tagger_for_options(opts).device_info(),
+        "semanticModelId": opts.semanticModelId,
+        "remote": _remote_worker_status(opts),
         "huggingFaceTokenConfigured": bool(huggingface_token()),
     }
 

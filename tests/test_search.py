@@ -109,6 +109,13 @@ class AliasAwareSearchTests(unittest.TestCase):
             sys.path.insert(0, backend_path)
         from fastapi.testclient import TestClient
         from app.main import app
+        from app.database import reset_engine_for_tests
+
+        # app.database's engine is a module-level singleton fixed at first
+        # import; under `unittest discover` every test class in the process
+        # would otherwise share whichever class's database happened to be
+        # created first, regardless of this class's own NEKO_DATA_DIR above.
+        reset_engine_for_tests()
 
         cls.client_context = TestClient(app)
         cls.client = cls.client_context.__enter__()
@@ -130,15 +137,16 @@ class AliasAwareSearchTests(unittest.TestCase):
 
     @staticmethod
     async def _seed_aliased_post():
-        from sqlalchemy import select
-
         from app.database import async_session
         from app.models import Post, Tag, TagAlias, TagCategory
 
         async with async_session() as session:
-            category = (
-                await session.execute(select(TagCategory).where(TagCategory.name == "character"))
-            ).scalars().first()
+            # Categories are seeded per-user now (ensure_default_categories),
+            # and this test never creates a user - so seed the one category
+            # it needs directly rather than relying on a global default.
+            category = TagCategory(name="character", color="#00c853")
+            session.add(category)
+            await session.flush()
             target = Tag(name="coral_pokemon", display_name="coral (pokemon)", category_id=category.id)
             session.add(target)
             await session.flush()

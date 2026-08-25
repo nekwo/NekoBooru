@@ -3,14 +3,15 @@ import sys
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .config import settings, get_bundle_dir
 from .database import init_db
-from .routers import uploads, upload_jobs, posts, tags, pools, notes, comments, sync, auto_tags, runtime, updates, site_imports, settings as settings_router
+from .dependencies import get_current_user
+from .routers import uploads, upload_jobs, posts, tags, pools, notes, comments, sync, auto_tags, runtime, updates, site_imports, settings as settings_router, auth as auth_router
 
 # Configure logging
 logging.basicConfig(
@@ -50,18 +51,20 @@ app = FastAPI(
 )
 
 # CORS middleware. Restricted to local origins by default (see
-# settings.cors_origins). The app uses no cookies/auth, so credentials are not
-# allowed; widen NEKO_CORS_ORIGINS only if you deliberately serve the web UI to
-# another device's browser.
+# settings.cors_origins). Login uses an httpOnly session cookie, so credentials
+# must be allowed; cors_origin_list is always an explicit list (never "*"), so
+# this is safe. Widen NEKO_CORS_ORIGINS only if you deliberately serve the web
+# UI to another device's browser.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include routers (must be before static file serving)
+app.include_router(auth_router.router)
 app.include_router(uploads.router)
 app.include_router(upload_jobs.router)
 app.include_router(posts.router)
@@ -93,16 +96,18 @@ async def get_info():
 
 
 @app.get("/api/stats")
-async def get_stats():
-    """Get database statistics."""
+async def get_stats(current_user=Depends(get_current_user)):
+    """Get database statistics for this user's own library (plus anything shared with them)."""
     from sqlalchemy import select, func
     from .database import async_session
     from .models import Post, Tag, Pool
+    from .services.auth import visible_owner_ids
 
     async with async_session() as session:
-        post_count = await session.execute(select(func.count(Post.id)))
-        tag_count = await session.execute(select(func.count(Tag.id)))
-        pool_count = await session.execute(select(func.count(Pool.id)))
+        owner_ids = await visible_owner_ids(session, current_user)
+        post_count = await session.execute(select(func.count(Post.id)).where(Post.owner_id.in_(owner_ids)))
+        tag_count = await session.execute(select(func.count(Tag.id)).where(Tag.owner_id.in_(owner_ids)))
+        pool_count = await session.execute(select(func.count(Pool.id)).where(Pool.owner_id.in_(owner_ids)))
 
         return {
             "posts": post_count.scalar() or 0,
@@ -112,7 +117,7 @@ async def get_stats():
 
 
 @app.get("/api/debug/paths")
-async def debug_paths():
+async def debug_paths(current_user=Depends(get_current_user)):
     """Debug endpoint to check frontend path resolution."""
     frozen = getattr(sys, 'frozen', False)
     bundle_dir = get_bundle_dir()

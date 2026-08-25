@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     auto_tagger_max_tags: int = 40
     auto_tagger_apply_safety: bool = True
 
+    # Multi-user auth. Session cookies default to non-Secure because the app
+    # binds loopback/LAN plain HTTP by default; flip session_cookie_secure to
+    # true once you put NekoBooru behind HTTPS (a browser silently drops
+    # Secure cookies over plain HTTP, which would make login look broken).
+    session_ttl_days: int = 30
+    session_cookie_secure: bool = False
+
     # Server settings
     # Bind to loopback by default so the API is reachable only from this
     # machine. The app has no authentication, so exposing it on a network gives
@@ -104,8 +111,15 @@ class Settings(BaseSettings):
     @property
     def data_dir(self) -> Path:
         """Get data directory from settings file or use default."""
-        if os.environ.get("NEKO_DATA_DIR"):
-            return runtime_paths.data_dir
+        env_override = os.environ.get("NEKO_DATA_DIR")
+        if env_override:
+            # Resolve the env var directly rather than runtime_paths.data_dir:
+            # runtime_paths is computed once at first import of this process,
+            # so a later NEKO_DATA_DIR change (as every test's setUpClass
+            # does, under `unittest discover` sharing one process across test
+            # classes) would otherwise silently keep resolving to whichever
+            # directory was current the first time this module loaded.
+            return Path(env_override).expanduser().resolve()
         settings_manager = SettingsManager(self.config_file)
         configured_dir = settings_manager.get_data_dir()
         if configured_dir:
@@ -135,7 +149,12 @@ class Settings(BaseSettings):
     @property
     def cache_dir(self) -> Path:
         """Get cache directory (e.g. on-demand video->gif conversions)."""
-        if os.environ.get("NEKO_CACHE_DIR") or runtime_paths.packaged:
+        env_override = os.environ.get("NEKO_CACHE_DIR")
+        if env_override:
+            # See data_dir above: resolve the env var directly, not via the
+            # frozen runtime_paths singleton.
+            return Path(env_override).expanduser().resolve()
+        if runtime_paths.packaged:
             return runtime_paths.cache_dir
         return self.data_dir / "cache"
 
