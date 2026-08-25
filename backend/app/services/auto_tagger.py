@@ -35,6 +35,7 @@ _LLAMA_PRELOAD_HANDLES: list[Any] = []
 _ONNX_DLL_DIRECTORY_HANDLES: list[Any] = []
 _ONNX_PRELOAD_HANDLES: list[Any] = []
 _ONNX_CUDA_PREPARED = False
+_ONNX_CUDA_DISABLED = False
 
 SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 SUPPORTED_VIDEO_EXTS = {".webm", ".mp4"}
@@ -1499,10 +1500,51 @@ def _create_onnx_session(ort, model_path: str):
 def _onnx_providers(ort) -> list[str]:
     available = set(ort.get_available_providers())
     providers = []
-    if "CUDAExecutionProvider" in available:
+    if "CUDAExecutionProvider" in available and not _ONNX_CUDA_DISABLED:
         providers.append("CUDAExecutionProvider")
     providers.append("CPUExecutionProvider")
     return providers
+
+
+# The taggers that build an onnxruntime session (see _create_onnx_session), and
+# so the ones a faulted CUDA context can be recovered for by rebuilding on CPU.
+_ONNX_TAGGER_MODEL_IDS = ("wd", "pixai", "camie", "cl")
+
+# Models already rebuilt on CPU after a CUDA fault, so a tagger that is broken
+# for some other reason costs one retry per process rather than one per image.
+_ONNX_CPU_REBUILT: set[str] = set()
+
+# A CUDA context that has faulted - a driver reset, an Xid, or Windows TDR
+# kicking in on the display GPU - stays broken for the life of the process:
+# every later call returns the sticky cudaErrorUnknown (999), and cublasCreate
+# then fails with CUBLAS_STATUS_NOT_INITIALIZED. Nothing recovers that
+# in-process, so instead of failing every remaining image with a confusing
+# CUBLAS message, drop to CPU once and keep tagging.
+_CUDA_CONTEXT_FATAL_MARKERS = (
+    "cublas failure 1",
+    "the library was not initialized",
+    "cuda failure 999",
+    "cudnn_status_execution_failed_cudart",
+    "cudnn_backend_api_failed",
+    "cudaerrorunknown",
+)
+
+
+def _is_cuda_context_fatal(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in _CUDA_CONTEXT_FATAL_MARKERS)
+
+
+def _disable_onnx_cuda(reason: str) -> None:
+    global _ONNX_CUDA_DISABLED
+    if _ONNX_CUDA_DISABLED:
+        return
+    _ONNX_CUDA_DISABLED = True
+    logger.error(
+        "CUDA context is unusable (%s). Falling back to CPU for ONNX taggers for the rest of "
+        "this process; restart the backend to use the GPU again.",
+        reason,
+    )
 
 
 def _qwen_device_map(device_preference: str):
@@ -3474,6 +3516,11 @@ def _run_optional(model_id: str, fn) -> AutoTagResult:
             duration_ms=_elapsed_ms(started),
         )
     except Exception as exc:  # noqa: BLE001
+        if _is_cuda_context_fatal(exc):
+            _disable_onnx_cuda(f"{model_id}: {exc}")
+            recovered = _retry_optional_on_cpu(model_id, fn, started)
+            if recovered is not None:
+                return recovered
         logger.warning("%s pipeline failed: %s", model_id, exc)
         return AutoTagResult(
             enabled=True,
@@ -3482,6 +3529,25 @@ def _run_optional(model_id: str, fn) -> AutoTagResult:
             evidence={"kind": model_id, "error": str(exc)},
             duration_ms=_elapsed_ms(started),
         )
+
+
+def _retry_optional_on_cpu(model_id: str, fn, started: float) -> AutoTagResult | None:
+    """Rebuild an ONNX tagger on CPU after a fatal CUDA fault and run it once more."""
+    if model_id not in _ONNX_TAGGER_MODEL_IDS or model_id in _ONNX_CPU_REBUILT:
+        return None
+    _ONNX_CPU_REBUILT.add(model_id)
+    try:
+        _tagger_for_model(model_id).unload()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not unload %s before the CPU retry: %s", model_id, exc)
+        return None
+    try:
+        result = _set_result_duration(fn(), started)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s pipeline failed after falling back to CPU: %s", model_id, exc)
+        return None
+    logger.info("%s recovered on CPU after the CUDA context faulted", model_id)
+    return result
 
 
 def _time_result(model_id: str, fn) -> AutoTagResult:

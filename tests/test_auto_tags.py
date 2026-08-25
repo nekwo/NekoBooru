@@ -2413,6 +2413,61 @@ class AutoTagUnitTests(unittest.TestCase):
         self.assertIs(result, expected)
         self.assertEqual(to_thread.call_args.args[0].__name__, "tag_media")
 
+    def test_cuda_context_faults_are_recognised(self):
+        from app.services.auto_tagger import _is_cuda_context_fatal
+
+        # The messages a poisoned CUDA context actually produces: the original
+        # cuDNN fault, then cublasCreate failing for everything after it.
+        self.assertTrue(_is_cuda_context_fatal(RuntimeError(
+            "CUBLAS failure 1: the library was not initialized ; GPU=0 ; expr=cublasCreate(&cublas_handle_);"
+        )))
+        self.assertTrue(_is_cuda_context_fatal(RuntimeError(
+            "CUDNN_FE failure 11: CUDNN_BACKEND_API_FAILED ; GPU=0 ;"
+        )))
+        self.assertTrue(_is_cuda_context_fatal(RuntimeError("CUDA failure 999: unknown error")))
+        self.assertFalse(_is_cuda_context_fatal(RuntimeError("CL Tagger model files are not downloaded")))
+
+    def test_fatal_cuda_error_rebuilds_the_tagger_on_cpu(self):
+        from app.services import auto_tagger
+        from app.services.auto_tagger import AutoTagResult
+
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "CUBLAS failure 1: the library was not initialized ; expr=cublasCreate(&cublas_handle_);"
+                )
+            return AutoTagResult(enabled=True, tags=["1girl"])
+
+        with patch.object(auto_tagger, "_ONNX_CUDA_DISABLED", False),                 patch.object(auto_tagger, "_ONNX_CPU_REBUILT", set()),                 patch.object(auto_tagger._cl_tagger, "unload", Mock(return_value=False)):
+            result = auto_tagger._run_optional("cl", flaky)
+            self.assertTrue(auto_tagger._ONNX_CUDA_DISABLED)
+
+        # The GPU attempt failed; the CPU rebuild produced tags instead of an error.
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(result.error)
+        self.assertEqual(result.tags, ["1girl"])
+
+    def test_cpu_rebuild_is_attempted_once_per_model(self):
+        from app.services import auto_tagger
+
+        calls = []
+
+        def always_fatal():
+            calls.append(1)
+            raise RuntimeError("CUBLAS failure 1: the library was not initialized")
+
+        with patch.object(auto_tagger, "_ONNX_CUDA_DISABLED", False),                 patch.object(auto_tagger, "_ONNX_CPU_REBUILT", set()),                 patch.object(auto_tagger._cl_tagger, "unload", Mock(return_value=False)):
+            for _ in range(3):
+                result = auto_tagger._run_optional("cl", always_fatal)
+
+        # Three images plus exactly one CPU rebuild, not one retry per image,
+        # and a model that stays broken still reports the error.
+        self.assertEqual(len(calls), 4)
+        self.assertIsNotNone(result.error)
+
 
 if __name__ == "__main__":
     unittest.main()
