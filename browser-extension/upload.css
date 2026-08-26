@@ -977,6 +977,11 @@ select:focus {
   display: block;
 }
 
+/* A thumbnail that failed to load: keep the tile, drop the broken-image icon. */
+.picker-cell img.picker-thumb-missing {
+  visibility: hidden;
+}
+
 .picker-badge {
   position: absolute;
   bottom: 0.35rem;

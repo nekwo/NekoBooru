@@ -69,6 +69,7 @@ function buildQuery() {
 
 function runSearch() {
   els.grid.innerHTML = ''
+  releaseThumbs()
   els.empty.classList.add('hidden')
   loadPage(1)
 }
@@ -128,10 +129,9 @@ function renderCell(post) {
   cell.title = post.tags && post.tags.length ? post.tags.join(' ') : `post #${post.id}`
 
   const img = document.createElement('img')
-  img.src = mediaUrl(post.thumbUrl)
   img.alt = ''
-  img.loading = 'lazy'
   cell.appendChild(img)
+  loadThumb(img, mediaUrl(post.thumbUrl))
 
   const kind = kindOf(post)
   if (kind !== 'image') {
@@ -144,6 +144,35 @@ function renderCell(post) {
   cell.addEventListener('click', () => selectPost(post, kind))
   els.grid.appendChild(cell)
 }
+
+// Media routes require the logged-in user like the rest of the API, and a bare
+// <img src> can carry neither the bearer token nor the instance's session
+// cookie (it's SameSite=lax, so it never leaves the browser for an extension
+// page). Fetch the bytes through authFetch and hand the element an object URL.
+const thumbObjectUrls = []
+
+async function loadThumb(img, url) {
+  try {
+    const res = await NekoAuth.authFetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const objUrl = URL.createObjectURL(await res.blob())
+    if (!img.isConnected) {
+      // A newer search already cleared the grid out from under this cell.
+      URL.revokeObjectURL(objUrl)
+      return
+    }
+    thumbObjectUrls.push(objUrl)
+    img.src = objUrl
+  } catch {
+    img.classList.add('picker-thumb-missing')
+  }
+}
+
+function releaseThumbs() {
+  thumbObjectUrls.splice(0).forEach((url) => URL.revokeObjectURL(url))
+}
+
+window.addEventListener('pagehide', releaseThumbs)
 
 // ---------------------------------------------------------------------------
 // Selecting a post: copy images; copy links and download GIFs/videos
