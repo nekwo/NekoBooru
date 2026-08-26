@@ -441,7 +441,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const tabId = Number(msg.tabId)
         if (!tabId || !msg.url) throw new Error('Missing target tab or media URL.')
-        const response = await fetch(msg.url)
+        // The URL is the instance's own media route, which requires the
+        // logged-in user like the rest of the API - a plain fetch() here 401s.
+        const response = await NekoAuth.authFetch(msg.url)
         if (!response.ok) throw new Error(`Could not fetch media (HTTP ${response.status}).`)
         const blob = await response.blob()
         const filename = msg.filename || filenameFromUrl(msg.url, response.headers.get('content-type') || '')

@@ -365,31 +365,37 @@ function toPng(blob) {
   })
 }
 
-// Prefer the downloads API so the browser owns the download — that way it keeps
-// going (and stays in the download shelf) after we auto-close the popup. Fall
-// back to an in-page blob download if the API is unavailable.
-function startDownload(url, filename) {
+// The downloads API can't attach the bearer token, and handing it the media URL
+// directly just downloads a 401 body, so fetch the bytes here and give the
+// browser a blob instead. That blob belongs to this page, so the popup has to
+// stay open until the transfer finishes — hence the onChanged wait.
+async function startDownload(url, filename) {
+  const res = await NekoAuth.authFetch(url)
+  if (!res.ok) throw new Error(`could not fetch media (HTTP ${res.status})`)
+  const objUrl = URL.createObjectURL(await res.blob())
+
+  if (!chrome.downloads || !chrome.downloads.download) {
+    return anchorDownload(objUrl, filename)
+  }
+
   return new Promise((resolve, reject) => {
-    if (chrome.downloads && chrome.downloads.download) {
-      chrome.downloads.download({ url, filename }, (id) => {
-        if (chrome.runtime.lastError || id == null) {
-          downloadMedia(url, filename).then(resolve, reject)
-        } else {
-          resolve()
-        }
-      })
-    } else {
-      downloadMedia(url, filename).then(resolve, reject)
-    }
+    chrome.downloads.download({ url: objUrl, filename }, (id) => {
+      if (chrome.runtime.lastError || id == null) {
+        anchorDownload(objUrl, filename).then(resolve, reject)
+        return
+      }
+      const onChanged = (delta) => {
+        if (delta.id !== id || !delta.state || delta.state.current === 'in_progress') return
+        chrome.downloads.onChanged.removeListener(onChanged)
+        URL.revokeObjectURL(objUrl)
+        resolve()
+      }
+      chrome.downloads.onChanged.addListener(onChanged)
+    })
   })
 }
 
-async function downloadMedia(url, filename) {
-  // url is the instance's own media URL (post.contentUrl), same as above.
-  const res = await NekoAuth.authFetch(url)
-  if (!res.ok) throw new Error(`could not fetch media (HTTP ${res.status})`)
-  const blob = await res.blob()
-  const objUrl = URL.createObjectURL(blob)
+async function anchorDownload(objUrl, filename) {
   const a = document.createElement('a')
   a.href = objUrl
   a.download = filename
