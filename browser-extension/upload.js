@@ -144,6 +144,8 @@ let knownTagCategories = {}
 // Seconds into the video the user pinned for analysis; null = automatic.
 let videoFrameTime = null
 let serverPreviewLoading = false
+// Object URL backing the server-fetched preview; released when replaced.
+let serverPreviewObjectUrl = ''
 let knownTagDisplayNames = {}
 // Booru lookup is not a model, so it is not part of a profile's model stack and
 // AI_TAG_PROFILES must not carry it: profiles are re-applied on every run, which
@@ -548,11 +550,21 @@ async function loadServerPreview(button) {
     await ensureBackendReady({ autoStart: true, button, label: 'Booting NekoBooru...' })
     setStatus('Fetching media for preview...', 'working')
     const token = await getContentToken()
+    // The content route requires the logged-in user like the rest of the API,
+    // and a bare <video src> / <img src> can carry neither the bearer token nor
+    // the instance's session cookie (SameSite=lax never leaves the browser for
+    // an extension page) - it 401s and the player sits at 0:00. Fetch the bytes
+    // through authFetch and hand the element an object URL instead.
+    const res = await NekoAuth.authFetch(`${instanceUrl}/api/uploads/${encodeURIComponent(token)}/content`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const objectUrl = URL.createObjectURL(await res.blob())
+    if (serverPreviewObjectUrl) URL.revokeObjectURL(serverPreviewObjectUrl)
+    serverPreviewObjectUrl = objectUrl
     els.preview.innerHTML = ''
     clearFramePicker()
     if (mediaType === 'video') {
       const v = document.createElement('video')
-      v.src = `${instanceUrl}/api/uploads/${encodeURIComponent(token)}/content`
+      v.src = objectUrl
       v.controls = true
       v.muted = true
       v.preload = 'metadata'
@@ -560,7 +572,7 @@ async function loadServerPreview(button) {
       renderFramePicker(v)
     } else {
       const img = document.createElement('img')
-      img.src = `${instanceUrl}/api/uploads/${encodeURIComponent(token)}/content`
+      img.src = objectUrl
       img.alt = 'preview'
       els.preview.appendChild(img)
     }
@@ -572,6 +584,10 @@ async function loadServerPreview(button) {
     if (doneBusy) doneBusy()
   }
 }
+
+window.addEventListener('pagehide', () => {
+  if (serverPreviewObjectUrl) URL.revokeObjectURL(serverPreviewObjectUrl)
+})
 
 // Pin the frame the AI analyses. Sampling heuristics pick by position in the
 // timeline; the user can pick the shot that actually shows the subject.
