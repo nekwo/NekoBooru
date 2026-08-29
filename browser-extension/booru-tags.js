@@ -82,7 +82,7 @@ const BOORU_SITES = [
     id: 'gelbooru',
     label: 'Gelbooru-style',
     // gelbooru.com plus the clones that share its dapi shape and markup.
-    matches: (host) => [
+    matches: (host) => host.endsWith('.gelbooru.com') || [
       'gelbooru.com',
       'safebooru.org',
       'rule34.xxx',
@@ -99,7 +99,7 @@ const BOORU_SITES = [
       `${url.origin}/index.php?page=dapi&s=post&q=index&json=1&id=${encodeURIComponent(id)}`,
     parse: parseGelbooruJson,
     // Gelbooru itself rejects the call; the clones answer it fine.
-    apiNeedsCredentials: (host) => host === 'gelbooru.com',
+    apiNeedsCredentials: (host) => host === 'gelbooru.com' || host.endsWith('.gelbooru.com'),
   },
 ]
 

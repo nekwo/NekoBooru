@@ -512,7 +512,8 @@ function sanitizeSiteImportJob(raw, senderUrl) {
     }
   }
   if (job.kind === 'gelbooru') {
-    if (sender.hostname.replace(/^www\./, '') !== 'gelbooru.com') {
+    const senderHost = sender.hostname.toLowerCase()
+    if (senderHost !== 'gelbooru.com' && !senderHost.endsWith('.gelbooru.com')) {
       throw new Error('Gelbooru imports can only start from Gelbooru.')
     }
     const senderId = sender.searchParams.get('page') === 'post' ? sender.searchParams.get('id') : ''

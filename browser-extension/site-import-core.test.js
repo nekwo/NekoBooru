@@ -3,6 +3,9 @@ const core = require('./site-import-core.js')
 
 assert.equal(core.pixivArtworkId('https://www.pixiv.net/en/artworks/122812376'), '122812376')
 assert.equal(core.gelbooruPostId('https://gelbooru.com/index.php?page=post&s=view&id=44'), '44')
+assert.equal(core.gelbooruPostId('https://ja.gelbooru.com/index.php?page=post&s=view&id=44'), '44')
+assert.equal(core.isGelbooruHost('ja.gelbooru.com'), true)
+assert.equal(core.isGelbooruHost('gelbooru.com.evil.example'), false)
 assert.equal(core.safebooruPostId('https://safebooru.org/index.php?page=post&s=view&id=55'), '55')
 assert.equal(core.safebooruPostId('https://gelbooru.com/index.php?page=post&s=view&id=55'), '')
 

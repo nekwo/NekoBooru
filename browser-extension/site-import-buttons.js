@@ -3,7 +3,7 @@
 
   const core = globalThis.NekoBooruSiteImport
   const PIXIV_HOST = location.hostname === 'pixiv.net' || location.hostname.endsWith('.pixiv.net')
-  const GELBOORU_HOST = location.hostname.replace(/^www\./, '') === 'gelbooru.com'
+  const GELBOORU_HOST = core.isGelbooruHost(location.hostname)
   const SAFEBOORU_HOST = location.hostname.replace(/^www\./, '') === 'safebooru.org'
   const BOORU_KIND = GELBOORU_HOST ? 'gelbooru' : (SAFEBOORU_HOST ? 'safebooru' : '')
   const BOORU_LABEL = GELBOORU_HOST ? 'Gelbooru' : 'Safebooru'

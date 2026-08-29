@@ -17,11 +17,17 @@
     }
   }
 
+  // gelbooru.com and its language mirrors (ja.gelbooru.com) share post IDs and
+  // markup, so an import can start from any of them.
+  function isGelbooruHost(hostname) {
+    const host = String(hostname || '').toLowerCase()
+    return host === 'gelbooru.com' || host.endsWith('.gelbooru.com')
+  }
+
   function gelbooruPostId(raw) {
     try {
       const url = new URL(raw)
-      const host = url.hostname.replace(/^www\./, '').toLowerCase()
-      if (host !== 'gelbooru.com' || url.searchParams.get('page') !== 'post') return ''
+      if (!isGelbooruHost(url.hostname) || url.searchParams.get('page') !== 'post') return ''
       const id = url.searchParams.get('id') || ''
       return /^\d+$/.test(id) ? id : ''
     } catch {
@@ -390,6 +396,7 @@
   const api = {
     normalizeTag,
     pixivArtworkId,
+    isGelbooruHost,
     gelbooruPostId,
     safebooruPostId,
     safebooruImportJob,
