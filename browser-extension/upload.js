@@ -7,7 +7,7 @@ const pageUrl = params.get('page') || ''
 const mediaType = params.get('type') || 'image'
 const xTweetId = params.get('xTweetId') || tweetIdFromUrl(pageUrl) || tweetIdFromUrl(srcUrl)
 const xTweetUsername = params.get('xTweetUsername') || tweetUsernameFromUrl(pageUrl) || tweetUsernameFromUrl(srcUrl)
-const xMediaIndex = parseXMediaIndex(params.get('xMediaIndex')) ?? xPhotoIndexFromUrl(pageUrl) ?? xPhotoIndexFromUrl(srcUrl)
+const xMediaIndex = parseXMediaIndex(params.get('xMediaIndex')) ?? xMediaIndexFromUrl(pageUrl) ?? xMediaIndexFromUrl(srcUrl)
 // 'link' when src is a page URL the server should fetch (yt-dlp), not direct
 // media to preview inline (e.g. an X tweet whose <video> is a blob URL).
 const fetchMode = params.get('fetch') || ''
@@ -1000,13 +1000,15 @@ function parseXMediaIndex(value) {
   return Number.isFinite(index) && index >= 0 ? index : null
 }
 
-function xPhotoIndexFromUrl(raw) {
+// /status/<id>/photo/<n> (stills) and /status/<id>/video/<n> (videos) are both
+// 1-based and both map onto the same 0-based attachment index.
+function xMediaIndexFromUrl(raw) {
   if (!raw) return null
   try {
     const url = new URL(raw)
     const host = url.hostname.toLowerCase()
     if (!/(^|\.)x\.com$|(^|\.)twitter\.com$/.test(host)) return null
-    const match = url.pathname.match(/\/photo\/(\d+)/)
+    const match = url.pathname.match(/\/(?:photo|video)\/(\d+)/)
     if (!match) return null
     const index = Number.parseInt(match[1], 10)
     return Number.isFinite(index) && index > 0 ? index - 1 : null
@@ -2275,30 +2277,47 @@ async function uploadCapturedXMedia() {
   const candidates = await capturedXMediaCandidates()
   if (!candidates.length) return ''
   const previewUrl = canonicalMediaUrl(srcUrl)
-  const indexedCandidate = Number.isInteger(xMediaIndex)
-    ? candidates.find((item) => item.index === xMediaIndex)
-    : null
   const exactCandidate = previewUrl
     ? candidates.find((item) => canonicalMediaUrl(item.url) === previewUrl)
     : null
-  const selectedCandidate = exactCandidate || indexedCandidate
   let lastError = ''
-  if (selectedCandidate?.url) {
+
+  // A known attachment index names one specific photo/video of the tweet, so
+  // upload that one or hand over to yt-dlp. Substituting another attachment
+  // here is what used to turn every /photo/2 download into /photo/1.
+  if (Number.isInteger(xMediaIndex)) {
+    // The capture keeps the tweet's own order, so its position still stands in
+    // for entries that reached the cache without an index of their own.
+    const wanted = exactCandidate
+      || candidates.find((item) => item.index === xMediaIndex)
+      || candidates[xMediaIndex]
+    if (!wanted?.url) return ''
     try {
       setStatus('Using selected X media...', 'working')
-      return await uploadMediaUrl(selectedCandidate.url, selectedCandidate.type === 'video' ? 'video/mp4' : 'image/jpeg', { browserFirst: true })
+      return await uploadMediaUrl(wanted.url, wanted.type === 'video' ? 'video/mp4' : 'image/jpeg', { browserFirst: true })
+    } catch (error) {
+      setStatus(`Captured X media failed, trying yt-dlp fallback: ${error?.message || String(error)}`, 'working')
+      return ''
+    }
+  }
+
+  if (exactCandidate?.url) {
+    try {
+      setStatus('Using selected X media...', 'working')
+      return await uploadMediaUrl(exactCandidate.url, exactCandidate.type === 'video' ? 'video/mp4' : 'image/jpeg', { browserFirst: true })
     } catch (error) {
       lastError = `selected X media failed: ${error?.message || String(error)}`
     }
   }
+  // No index to go on, so rank on what is left: an exact match with the
+  // preview, then the expected media type.
   const ordered = candidates
-    .filter((item) => item !== selectedCandidate)
+    .filter((item) => item !== exactCandidate)
     .map((item, index) => ({
       item,
       index,
       score:
         (canonicalMediaUrl(item.url) === previewUrl ? 1000 : 0) +
-        (Number.isInteger(xMediaIndex) && item.index === xMediaIndex ? 500 : 0) +
         (item.type === mediaType ? 10 : 0) -
         index,
     }))
@@ -2453,10 +2472,16 @@ async function getContentToken() {
   return contentToken
 }
 
+// Media X serves straight off its CDN: stills on pbs.twimg.com, and the plain
+// mp4 behind an animated GIF on video.twimg.com. Both can be fetched here with
+// the browser's own session, which is what protected posts need — and for a
+// GIF it beats yt-dlp, which only ever returns the tweet's first video.
 function isTwitterMediaCdnUrl(raw) {
   try {
     const url = new URL(raw)
-    return url.hostname.toLowerCase() === 'pbs.twimg.com' && url.pathname.includes('/media/')
+    const host = url.hostname.toLowerCase()
+    if (host === 'pbs.twimg.com') return url.pathname.includes('/media/')
+    return host === 'video.twimg.com' || host.endsWith('.video.twimg.com')
   } catch {
     return false
   }

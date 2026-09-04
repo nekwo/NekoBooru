@@ -139,18 +139,41 @@ function tweetUsernameFromUrl(raw) {
   }
 }
 
-function xPhotoIndexFromUrl(raw) {
+// X addresses an individual attachment as /status/<id>/photo/<n> (stills) or
+// /status/<id>/video/<n> (videos), both 1-based. Both forms map onto the same
+// 0-based media index the captured tweet payload uses.
+function xMediaIndexFromUrl(raw) {
   if (!raw) return null
   try {
     const url = new URL(raw)
     const host = url.hostname.toLowerCase()
     if (!/(^|\.)x\.com$|(^|\.)twitter\.com$/.test(host)) return null
-    const match = url.pathname.match(/\/photo\/(\d+)/)
+    const match = url.pathname.match(/\/(?:photo|video)\/(\d+)/)
     if (!match) return null
     const index = Number.parseInt(match[1], 10)
     return Number.isFinite(index) && index > 0 ? index - 1 : null
   } catch {
     return null
+  }
+}
+
+// A tweet's canonical status URL (the timestamp link) never carries the
+// /photo/<n> the reader is actually looking at. When `reference` points at the
+// same tweet and does carry one, put it back — otherwise the attachment index
+// is lost and every download falls back to the first attachment.
+function withXMediaIndexPath(statusUrl, reference) {
+  if (!statusUrl || !reference) return statusUrl
+  if (xMediaIndexFromUrl(statusUrl) !== null) return statusUrl
+  const tweetId = tweetIdFromUrl(statusUrl)
+  if (!tweetId || tweetId !== tweetIdFromUrl(reference)) return statusUrl
+  const suffix = new URL(reference).pathname.match(/\/(?:photo|video)\/\d+/)?.[0]
+  if (!suffix) return statusUrl
+  try {
+    const url = new URL(statusUrl)
+    url.pathname = url.pathname.replace(/\/+$/, '') + suffix
+    return url.href
+  } catch {
+    return statusUrl
   }
 }
 
@@ -172,12 +195,20 @@ function normalizeUploadSrcUrl(raw) {
   return raw
 }
 
+// Entries scraped off the page know their URL but not their position in the
+// tweet, so they carry a null index. Sort those last and let the dedupe keep
+// the indexed copy: a null-index duplicate must never displace the real
+// position a GraphQL capture recorded for the same media.
 function normalizeMediaList(media = []) {
   const seen = new Set()
   return media
     .filter((item) => item?.url && (item.type === 'image' || item.type === 'video'))
-    .map((item) => ({ ...item, url: item.type === 'image' ? normalizeUploadSrcUrl(item.url) : item.url }))
-    .sort((a, b) => (a.index || 0) - (b.index || 0))
+    .map((item) => ({
+      ...item,
+      index: Number.isInteger(item.index) ? item.index : null,
+      url: item.type === 'image' ? normalizeUploadSrcUrl(item.url) : item.url,
+    }))
+    .sort((a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER))
     .filter((item) => {
       if (seen.has(item.url)) return false
       seen.add(item.url)
@@ -333,7 +364,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (xTweetUsername) params.set('xTweetUsername', xTweetUsername)
     const xMediaIndex = Number.isInteger(msg.xMediaIndex)
       ? msg.xMediaIndex
-      : xPhotoIndexFromUrl(msg.page || target)
+      : xMediaIndexFromUrl(msg.page || target)
     if (Number.isInteger(xMediaIndex)) params.set('xMediaIndex', String(xMediaIndex))
     openPopup('upload.html', params, sender.tab)
     return
@@ -546,7 +577,10 @@ function capturedXMediaFromPage(postUrl, mediaUrl, mediaType) {
     const isImage = mediaType === 'image' && host === 'pbs.twimg.com' && url.pathname.includes('/media/')
     const isVideo = mediaType === 'video' && (host === 'video.twimg.com' || host.endsWith('.video.twimg.com'))
     if (!isImage && !isVideo) return null
-    return { tweetId, media: [{ type: mediaType, url: url.href, index: 0 }] }
+    // Only /photo/<n> and /video/<n> URLs say which attachment this is. Without
+    // one the position is genuinely unknown — claiming index 0 would relabel
+    // the second attachment as the first.
+    return { tweetId, media: [{ type: mediaType, url: url.href, index: xMediaIndexFromUrl(postUrl) }] }
   } catch {
     return null
   }
@@ -791,13 +825,26 @@ async function handleContextMenuClick(info, tab) {
   const overVideo = lastHasVideo || info.mediaType === 'video'
   const useYtdlp = onVideoSite && (info.menuItemId === DOWNLOAD_PAGE_ID || overVideo)
 
-  if (useYtdlp) {
-    const linked = info.linkUrl && isVideoPlatformUrl(info.linkUrl) ? info.linkUrl : ''
+  const linkedPageUrl = info.linkUrl && isVideoPlatformUrl(info.linkUrl) ? info.linkUrl : ''
+  const sourcePageUrl = withXMediaIndexPath(linkedPageUrl || pageUrl, pageUrl)
+
+  // yt-dlp always returns a tweet's *first* video, whatever /photo/<n> or
+  // /video/<n> the URL names — and X numbers animated GIFs as /photo/<n> too,
+  // so "the second photo" is routinely a GIF that yt-dlp answers with the
+  // first one. Whenever the click names a single attachment, take that one and
+  // skip yt-dlp entirely.
+  const xAttachment = onVideoSite
+    ? xAttachmentFromClick(info, overVideo) || await capturedXAttachment(sourcePageUrl)
+    : null
+
+  if (useYtdlp && !xAttachment) {
     const contextualPost = lastPostUrl && isVideoPlatformUrl(lastPostUrl) ? lastPostUrl : ''
     const resolvedPost = isXPageUrl(pageUrl)
       ? await resolveXStatusUrlFromTab(tab?.id, info.srcUrl || lastMediaUrl)
       : ''
-    const target = linked || resolvedPost || contextualPost || pageUrl
+    // Each of these can be the tweet's bare status URL; re-attach the
+    // attachment the address bar is showing so the popup keeps the index.
+    const target = withXMediaIndexPath(linkedPageUrl || resolvedPost || contextualPost || pageUrl, pageUrl)
     if (!target) return
     const params = new URLSearchParams({
       src: target,
@@ -809,31 +856,73 @@ async function handleContextMenuClick(info, tab) {
     if (xTweetId) params.set('xTweetId', xTweetId)
     const xTweetUsername = tweetUsernameFromUrl(target)
     if (xTweetUsername) params.set('xTweetUsername', xTweetUsername)
-    const xMediaIndex = xPhotoIndexFromUrl(target)
+    const xMediaIndex = xMediaIndexFromUrl(target)
     if (Number.isInteger(xMediaIndex)) params.set('xMediaIndex', String(xMediaIndex))
     if (tab?.id != null) params.set('sourceTabId', String(tab.id))
     openPopup('upload.html', params, tab)
     return
   }
 
-  const srcUrl = normalizeUploadSrcUrl(info.srcUrl)
+  const srcUrl = normalizeUploadSrcUrl(xAttachment?.url || info.srcUrl)
   if (!srcUrl) return
-  const linkedPageUrl = info.linkUrl && isVideoPlatformUrl(info.linkUrl) ? info.linkUrl : ''
-  const sourcePageUrl = linkedPageUrl || pageUrl
   const params = new URLSearchParams({
     src: srcUrl,
     page: sourcePageUrl,
-    type: info.mediaType || 'image',
+    type: xAttachment?.type || info.mediaType || 'image',
     fetch: 'direct', // grab this src as-is; don't second-guess via yt-dlp
   })
   const xTweetId = tweetIdFromUrl(sourcePageUrl)
   if (xTweetId) params.set('xTweetId', xTweetId)
   const xTweetUsername = tweetUsernameFromUrl(sourcePageUrl)
   if (xTweetUsername) params.set('xTweetUsername', xTweetUsername)
-  const xMediaIndex = xPhotoIndexFromUrl(sourcePageUrl)
+  const xMediaIndex = xMediaIndexFromUrl(sourcePageUrl)
   if (Number.isInteger(xMediaIndex)) params.set('xMediaIndex', String(xMediaIndex))
   if (tab?.id != null) params.set('sourceTabId', String(tab.id))
   openPopup('upload.html', params, tab)
+}
+
+// True for media X serves straight off its CDN, which the extension can fetch
+// with the browser's own session: stills on pbs.twimg.com and the plain mp4
+// behind an animated GIF. A real X video is an MSE blob with no such URL.
+function isTwitterCdnMediaUrl(raw) {
+  if (!raw) return false
+  try {
+    const url = new URL(raw)
+    const host = url.hostname.toLowerCase()
+    if (host === 'pbs.twimg.com') return url.pathname.includes('/media/')
+    return host === 'video.twimg.com' || host.endsWith('.video.twimg.com')
+  } catch {
+    return false
+  }
+}
+
+// The right-clicked element itself, when it names real bytes — the most direct
+// answer there is, and the one that lets a reader pick a specific attachment
+// (the lightbox's thumbnail strip) without the address bar agreeing. X renders
+// an animated GIF as <video src="https://video.twimg.com/tweet_video/….mp4">,
+// so a click on one identifies that GIF exactly. An <img> counts only when
+// nothing was playing under the pointer: over a player it is the poster frame.
+function xAttachmentFromClick(info, overVideo) {
+  const url = String(info?.srcUrl || '')
+  if (!isTwitterCdnMediaUrl(url)) return null
+  if (info.mediaType === 'video') return { url, type: 'video' }
+  if (info.mediaType === 'image' && !overVideo) return { url, type: 'image' }
+  return null
+}
+
+// The attachment a /photo/<n> or /video/<n> URL names, from the tweet payload
+// x-media-capture.js recorded. That payload carries X's own ordering, so it is
+// the authority on which attachment is the second one.
+async function capturedXAttachment(rawUrl) {
+  const tweetId = tweetIdFromUrl(rawUrl)
+  const index = xMediaIndexFromUrl(rawUrl)
+  if (!tweetId || !Number.isInteger(index)) return null
+  if (!xMediaCache.has(tweetId)) await loadXMediaCache()
+  const media = getXMedia(tweetId)
+  // Fall back to the position only when no entry claims the index: a page
+  // scrape can land in the cache without one.
+  const found = media.find((item) => item.index === index) || media[index]
+  return found?.url ? { url: found.url, type: found.type } : null
 }
 
 function isXPageUrl(raw) {

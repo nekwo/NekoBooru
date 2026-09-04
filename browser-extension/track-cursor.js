@@ -226,19 +226,35 @@ function tweetUsernameFromUrl(raw) {
   return url.match(/\/([^/]+)\/status\/\d+/)?.[1] || ''
 }
 
-function xPhotoIndexFromUrl(raw) {
+// /status/<id>/photo/<n> (stills) and /status/<id>/video/<n> (videos) are both
+// 1-based and both map onto the same 0-based attachment index.
+function xMediaIndexFromUrl(raw) {
   const url = normalizedStatusUrl(raw)
-  const match = url.match(/\/photo\/(\d+)/)
+  const match = url.match(/\/(?:photo|video)\/(\d+)/)
   if (!match) return null
   const index = Number.parseInt(match[1], 10)
   return Number.isFinite(index) && index > 0 ? index - 1 : null
+}
+
+// A tweet's timestamp link is always the bare status URL, so a status URL read
+// off the page loses the attachment the reader opened. Restore it from the
+// address bar when both point at the same tweet.
+function withLocationMediaIndex(statusUrl) {
+  if (!statusUrl || xMediaIndexFromUrl(statusUrl) !== null) return statusUrl
+  const current = normalizedStatusUrl(location.href)
+  if (!current || tweetIdFromUrl(current) !== tweetIdFromUrl(statusUrl)) return statusUrl
+  const suffix = new URL(current).pathname.match(/\/(?:photo|video)\/\d+/)?.[0]
+  if (!suffix) return statusUrl
+  const url = new URL(statusUrl)
+  url.pathname = url.pathname.replace(/\/+$/, '') + suffix
+  return url.href
 }
 
 function statusUrlFromArticle(article) {
   if (!article) return ''
   const timeLink = article.querySelector('a[href*="/status/"] time')?.closest('a')
   const statusLink = timeLink || article.querySelector('a[href*="/status/"]')
-  return normalizedStatusUrl(statusLink?.getAttribute('href') || statusLink?.href || '')
+  return withLocationMediaIndex(normalizedStatusUrl(statusLink?.getAttribute('href') || statusLink?.href || ''))
 }
 
 function normalizeCapturedMediaUrl(raw, type) {
@@ -371,7 +387,7 @@ function imageUrlFromArticle(article) {
 function statusUrlForMediaElement(article, element) {
   const mediaLink = element?.closest?.('a[href*="/status/"]')
   const mediaStatusUrl = normalizedStatusUrl(mediaLink?.getAttribute('href') || mediaLink?.href || '')
-  if (mediaStatusUrl) return mediaStatusUrl
+  if (mediaStatusUrl) return withLocationMediaIndex(mediaStatusUrl)
 
   const nestedArticle = element?.closest?.('article[data-testid="tweet"]')
   const nestedStatusUrl = nestedArticle && nestedArticle !== article ? statusUrlFromArticle(nestedArticle) : ''
@@ -430,7 +446,7 @@ function uploadTargetFromArticle(article) {
       fetch: 'direct',
       xTweetId: tweetIdFromUrl(image.statusUrl || statusUrl),
       xTweetUsername: tweetUsernameFromUrl(image.statusUrl || statusUrl),
-      xMediaIndex: xPhotoIndexFromUrl(image.statusUrl || statusUrl),
+      xMediaIndex: xMediaIndexFromUrl(image.statusUrl || statusUrl),
     }
   }
 
@@ -531,7 +547,7 @@ function openUploadForTarget(target) {
     }
     const xMediaIndex = Number.isInteger(target.xMediaIndex)
       ? target.xMediaIndex
-      : xPhotoIndexFromUrl(target.page || target.src)
+      : xMediaIndexFromUrl(target.page || target.src)
     if (Number.isInteger(xMediaIndex)) message.xMediaIndex = xMediaIndex
     chrome.runtime.sendMessage(message)
   } catch {
