@@ -24,7 +24,7 @@ def _health_ok(port: int) -> bool:
         return False
 
 
-def _popen_hidden(args: list[str]) -> subprocess.Popen:
+def _popen_hidden(args: list[str], log_path: Path | None = None) -> subprocess.Popen:
     kwargs = {}
     if os.name == "nt":
         startupinfo = subprocess.STARTUPINFO()
@@ -35,14 +35,29 @@ def _popen_hidden(args: list[str]) -> subprocess.Popen:
             | subprocess.CREATE_NEW_PROCESS_GROUP
         )
         kwargs["startupinfo"] = startupinfo
-    return subprocess.Popen(
-        args,
-        cwd=str(_backend_dir()),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        **kwargs,
-    )
+    output = subprocess.DEVNULL
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        output = open(log_path, "ab")
+    try:
+        return subprocess.Popen(
+            args,
+            cwd=str(_backend_dir()),
+            stdout=output,
+            stderr=subprocess.STDOUT if log_path is not None else subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            **kwargs,
+        )
+    finally:
+        if log_path is not None:
+            output.close()
+
+
+def _server_log_path() -> Path:
+    # The same file the extension's launcher writes, so a restarted server keeps
+    # logging where the first one did instead of into DEVNULL.
+    logs_dir = os.environ.get("NEKO_LOGS_DIR")
+    return (Path(logs_dir) if logs_dir else _backend_dir().parent / "logs") / "native-backend.log"
 
 
 def _restart_waiter(argv: list[str]) -> int:
@@ -70,7 +85,7 @@ def _restart_waiter(argv: list[str]) -> int:
                 break
             time.sleep(0.25)
         time.sleep(0.35)
-    _popen_hidden([executable, "run_prod.py"])
+    _popen_hidden([executable, "run_prod.py"], log_path=_server_log_path())
     return 0
 
 
