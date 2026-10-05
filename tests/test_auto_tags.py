@@ -1364,6 +1364,17 @@ class AutoTagUnitTests(unittest.TestCase):
             "https://example.com/media/HKSUfpEa0AALL8x?format=jpg&name=900x900",
         )
 
+    def test_sankaku_media_uses_app_referer_and_rejects_placeholder(self):
+        from app.routers.uploads import _is_sankaku_hotlink_placeholder, _media_referer
+
+        chan = "https://chan.sankakucomplex.com/en/posts/e8M5Yy3XpMz"
+        self.assertEqual(_media_referer("s.sankakucomplex.com", chan), "https://sankaku.app/")
+        self.assertEqual(_media_referer("v.sankakucomplex.com", chan), "https://sankaku.app/")
+        self.assertEqual(_media_referer("chan.sankakucomplex.com", chan), chan)
+        self.assertEqual(_media_referer("img.example", "https://img.example/"), "https://img.example/")
+        self.assertTrue(_is_sankaku_hotlink_placeholder("https://chan.sankakucomplex.com/redirect.png?e=1&m=x"))
+        self.assertFalse(_is_sankaku_hotlink_placeholder("https://s.sankakucomplex.com/o/62/4e/abc.jpg?e=1&m=x"))
+
     def test_post_process_filters_default_noisy_tags(self):
         from app.services.auto_tagger import AutoTagOptions, AutoTagResult, _post_process
 

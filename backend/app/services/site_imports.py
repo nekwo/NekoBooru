@@ -1,6 +1,9 @@
 """Metadata needed by one-click imports from supported source sites."""
 from __future__ import annotations
 
+import re
+import time
+
 import httpx
 
 from .booru_suggest import gelbooru_credentials
@@ -142,3 +145,244 @@ async def gelbooru_post_for_import(post_id: int, *, timeout: float = DEFAULT_TIM
         "width": post.get("width"),
         "height": post.get("height"),
     }
+
+
+# Sankaku spells a qualified character or series in full -
+# honoka_(dead_or_alive) - where Danbooru, and Gelbooru/Safebooru after it,
+# abbreviate it to honoka_(doa). Imports take Danbooru's spelling so one
+# character is one tag whichever site it came from.
+DANBOORU = "https://danbooru.donmai.us"
+DANBOORU_USER_AGENT = "NekoBooru/1.0 (Sankaku tag names)"
+DANBOORU_NAME_CACHE_SECONDS = 24 * 3600.0
+MAX_NAME_LOOKUPS = 200
+# Names per Danbooru request; every step below is batched, so a post's worth
+# of tags - or a backfill's - costs a handful of requests, not several per tag.
+NAME_BATCH = 80
+_QUALIFIED_TAG = re.compile(r"^(?P<base>.+?)_\((?P<qualifier>[^()]+)\)$")
+_danbooru_name_cache: dict[str, tuple[float, str | None]] = {}
+
+
+def _initials(qualifier: str) -> str:
+    words = [word for word in qualifier.split("_") if word]
+    return "".join(word[0] for word in words) if len(words) >= 2 else ""
+
+
+async def _danbooru_get(client: httpx.AsyncClient, path: str, params: dict[str, str | int]) -> list[dict]:
+    response = await client.get(f"{DANBOORU}{path}", params=params)
+    response.raise_for_status()
+    payload = response.json()
+    return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
+
+
+def _batches(names: list[str]):
+    for offset in range(0, len(names), NAME_BATCH):
+        yield names[offset:offset + NAME_BATCH]
+
+
+async def _danbooru_used_names(client: httpx.AsyncClient, names: list[str]) -> set[str]:
+    used: set[str] = set()
+    for batch in _batches(names):
+        rows = await _danbooru_get(
+            client,
+            "/tags.json",
+            {"search[name_comma]": ",".join(batch), "only": "name,post_count", "limit": len(batch)},
+        )
+        used.update(str(row.get("name")) for row in rows if int(row.get("post_count") or 0) > 0)
+    return used
+
+
+async def _danbooru_aliases(client: httpx.AsyncClient, field: str, names: list[str]) -> list[tuple[str, str]]:
+    """Active (antecedent, consequent) alias pairs whose ``field`` is one of ``names``."""
+    pairs: list[tuple[str, str]] = []
+    for batch in _batches(names):
+        rows = await _danbooru_get(
+            client,
+            "/tag_aliases.json",
+            {
+                f"search[{field}_comma]": ",".join(batch),
+                "search[status]": "active",
+                "only": "antecedent_name,consequent_name",
+                "limit": 1000,
+            },
+        )
+        pairs.extend(
+            (str(row["antecedent_name"]), str(row["consequent_name"]))
+            for row in rows
+            if row.get("antecedent_name") and row.get("consequent_name")
+        )
+    return pairs
+
+
+async def _danbooru_spellings(client: httpx.AsyncClient, tags: list[str]) -> dict[str, str | None]:
+    """Danbooru's name for each tag - itself when Danbooru uses it - or None."""
+    used = await _danbooru_used_names(client, tags)
+    result: dict[str, str | None] = {tag: tag for tag in tags if tag in used}
+    missing = [tag for tag in tags if tag not in used]
+    if not missing:
+        return result
+
+    # Danbooru may alias the whole name: special_week_(uma_musume) -> ..._(umamusume).
+    for antecedent, consequent in await _danbooru_aliases(client, "antecedent_name", missing):
+        if antecedent in missing and antecedent not in result:
+            result[antecedent] = consequent
+    rest = [tag for tag in missing if tag not in result]
+
+    # Otherwise swap the qualifier for one Danbooru treats as the same series,
+    # in either direction (uma_musume -> umamusume, dead_or_alive <- doa), or
+    # for its initials - and keep it only if Danbooru really uses the result.
+    qualifiers = sorted({match.group("qualifier") for tag in rest if (match := _QUALIFIED_TAG.match(tag))})
+    variants: dict[str, list[str]] = {qualifier: [] for qualifier in qualifiers}
+    if qualifiers:
+        for antecedent, consequent in await _danbooru_aliases(client, "antecedent_name", qualifiers):
+            if antecedent in variants:
+                variants[antecedent].append(consequent)
+        for antecedent, consequent in await _danbooru_aliases(client, "consequent_name", qualifiers):
+            if consequent in variants:
+                variants[consequent].append(antecedent)
+    candidates: dict[str, list[str]] = {}
+    for tag in rest:
+        match = _QUALIFIED_TAG.match(tag)
+        if not match:
+            continue
+        base, qualifier = match.group("base"), match.group("qualifier")
+        options = variants.get(qualifier, []) + [_initials(qualifier)]
+        candidates[tag] = [f"{base}_({option})" for option in dict.fromkeys(options) if option and option != qualifier]
+    found = await _danbooru_used_names(client, sorted({name for names in candidates.values() for name in names}))
+    for tag in rest:
+        result[tag] = next((name for name in candidates.get(tag, []) if name in found), None)
+    return result
+
+
+async def danbooru_names(
+    tags: list[str],
+    categories: dict[str, str],
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict[str, str]:
+    """Map each character/copyright tag Danbooru spells differently to its spelling.
+
+    Lookups that fail leave the tags as they are and are not cached, so an
+    outage never renames anything and the next import tries again.
+    """
+    wanted = [
+        tag
+        for tag in dict.fromkeys(str(tag).strip().lower() for tag in tags)
+        if tag and categories.get(tag) in {"character", "copyright"} and _QUALIFIED_TAG.match(tag)
+    ][:MAX_NAME_LOOKUPS]
+    renames: dict[str, str] = {}
+    if not wanted:
+        return renames
+    now = time.monotonic()
+    uncached = [tag for tag in wanted if not (tag in _danbooru_name_cache and _danbooru_name_cache[tag][0] > now)]
+    if uncached:
+        async with httpx.AsyncClient(
+            headers={"User-Agent": DANBOORU_USER_AGENT},
+            timeout=timeout,
+            follow_redirects=True,
+        ) as client:
+            try:
+                spellings = await _danbooru_spellings(client, uncached)
+            except (httpx.HTTPError, ValueError):
+                spellings = {}
+        for tag, name in spellings.items():
+            _danbooru_name_cache[tag] = (now + DANBOORU_NAME_CACHE_SECONDS, name)
+    for tag in wanted:
+        cached = _danbooru_name_cache.get(tag)
+        name = cached[1] if cached else None
+        if name and name != tag:
+            renames[tag] = name
+    return renames
+
+
+# The reverse direction, for tags that came from Danbooru, Gelbooru, or an
+# older import: find the name Sankaku files honoka_(doa) under. Only a
+# qualifier Danbooru expands (doa -> dead_or_alive, kancolle ->
+# kantai_collection) can make Sankaku's name differ, so those expansions are
+# fetched first in batches, and Sankaku is asked only about the few tags
+# whose qualifier has one.
+SANKAKU_API = "https://sankakuapi.com"
+EXPANSION_BATCH = 50
+_qualifier_expansions: dict[str, list[str]] = {}
+
+
+class SourceThrottled(RuntimeError):
+    """A site answered 429/403/503: stop asking it for now."""
+
+
+def _raise_for_throttle(response: httpx.Response, site: str) -> None:
+    if response.status_code in (403, 429, 503):
+        raise SourceThrottled(f"{site} answered HTTP {response.status_code}")
+    response.raise_for_status()
+
+
+async def _sankaku_has_posts(client: httpx.AsyncClient, tag: str) -> bool:
+    response = await client.get(f"{SANKAKU_API}/posts", params={"tags": tag, "limit": 1})
+    _raise_for_throttle(response, "Sankaku")
+    payload = response.json()
+    return isinstance(payload, list) and bool(payload)
+
+
+async def expand_qualifiers(client: httpx.AsyncClient, qualifiers) -> dict[str, list[str]]:
+    """Danbooru's longer names for each qualifier, a batch of qualifiers per request."""
+    wanted = [q for q in dict.fromkeys(qualifiers) if q and q not in _qualifier_expansions]
+    for offset in range(0, len(wanted), EXPANSION_BATCH):
+        batch = wanted[offset:offset + EXPANSION_BATCH]
+        response = await client.get(
+            f"{DANBOORU}/tag_aliases.json",
+            params={
+                "search[antecedent_name_comma]": ",".join(batch),
+                "search[status]": "active",
+                "only": "antecedent_name,consequent_name",
+                "limit": 1000,
+            },
+        )
+        _raise_for_throttle(response, "Danbooru")
+        payload = response.json()
+        rows = [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
+        for qualifier in batch:
+            _qualifier_expansions[qualifier] = []
+        for row in rows:
+            antecedent = str(row.get("antecedent_name") or "")
+            consequent = str(row.get("consequent_name") or "")
+            if antecedent in batch and consequent:
+                _qualifier_expansions[antecedent].append(consequent)
+    return {q: _qualifier_expansions.get(q, []) for q in qualifiers}
+
+
+def sankaku_candidates(spelling: str, expansions: dict[str, list[str]]) -> list[str]:
+    """Sankaku spellings worth checking for ``spelling``, from the expansions."""
+    match = _QUALIFIED_TAG.match(spelling)
+    if not match:
+        return []
+    base = match.group("base")
+    return [f"{base}_({longer})" for longer in expansions.get(match.group("qualifier"), [])]
+
+
+def qualifier_of(spelling: str) -> str:
+    match = _QUALIFIED_TAG.match(spelling)
+    return match.group("qualifier") if match else ""
+
+
+async def sankaku_name_for(client: httpx.AsyncClient, spelling: str) -> str | None:
+    """Sankaku's name for a qualified tag it spells differently, or None.
+
+    Network errors propagate so a caller can tell "no" from "could not ask".
+    """
+    qualifier = qualifier_of(spelling)
+    if not qualifier:
+        return None
+    expansions = await expand_qualifiers(client, [qualifier])
+    for candidate in sankaku_candidates(spelling, expansions):
+        if await _sankaku_has_posts(client, candidate):
+            return candidate
+    return None
+
+
+async def lookup_sankaku_name(spelling: str, *, timeout: float = DEFAULT_TIMEOUT) -> str | None:
+    """sankaku_name_for() with its own client, for a single on-demand lookup."""
+    async with httpx.AsyncClient(
+        headers={"User-Agent": DANBOORU_USER_AGENT},
+        timeout=timeout,
+        follow_redirects=True,
+    ) as client:
+        return await sankaku_name_for(client, spelling)

@@ -32,6 +32,40 @@ class UrlFetchRequest(BaseModel):
     url: str
     cookies: str | None = None
     referer: str | None = None
+    # Caller-chosen id to poll /from-url/progress/<id> with while it downloads.
+    progressId: str | None = None
+
+
+# Bytes received so far for downloads a caller asked to follow. A slow source
+# (Sankaku throttles video) otherwise looks exactly like a hung request.
+_PROGRESS_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+_PROGRESS_TTL_SECONDS = 600
+_fetch_progress: dict[str, dict] = {}
+
+
+# Files /from-url is downloading right now, so a second request for the same
+# one is refused rather than run alongside it.
+_active_downloads: set[str] = set()
+
+
+def _download_key(parsed) -> str:
+    host = (parsed.hostname or "").lower()
+    # Signed CDN links differ per request only in their query (Sankaku's e,
+    # m, and token), so the path alone names the file there.
+    if _is_sankaku_media_host(host):
+        return f"{host}{parsed.path}"
+    return urlunparse(parsed._replace(fragment=""))
+
+
+def _start_fetch_progress(progress_id: str | None, total: int | None) -> dict | None:
+    if not progress_id or not _PROGRESS_ID.match(progress_id):
+        return None
+    now = time.monotonic()
+    for key in [key for key, entry in _fetch_progress.items() if now - entry["started"] > _PROGRESS_TTL_SECONDS]:
+        _fetch_progress.pop(key, None)
+    entry = {"received": 0, "total": total, "done": False, "started": now}
+    _fetch_progress[progress_id] = entry
+    return entry
 
 
 class FediverseRequest(BaseModel):
@@ -356,6 +390,16 @@ async def upload_from_url(request: UrlFetchRequest, current_user: User = Depends
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid URL")
 
+    # The same file twice at once is a double click, not a wish for two
+    # copies; with a throttled source it also halves the speed of both.
+    download_key = _download_key(parsed)
+    if download_key in _active_downloads:
+        raise HTTPException(
+            status_code=409,
+            detail="This file is already downloading. Wait for that import to finish.",
+        )
+    _active_downloads.add(download_key)
+
     # Generate unique token
     token = str(uuid.uuid4())
 
@@ -370,42 +414,63 @@ async def upload_from_url(request: UrlFetchRequest, current_user: User = Depends
                         referer = request.referer
                 except ValueError:
                     pass
+            referer = _media_referer(parsed.hostname, referer)
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'image/*,video/*,*/*',
                 'Referer': referer,
             }
 
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-
-            # Determine file extension from content-type or URL
-            content_type = response.headers.get('content-type', '').split(';')[0].strip()
-            extension = MIME_TO_EXT.get(content_type)
-            url_path = Path(parsed.path)
-
-            if not extension:
-                # Try to get from URL path
-                url_extension = normalize_upload_extension(url_path.suffix.lower())
-                if url_extension in settings.allowed_extensions:
-                    extension = url_extension
-                else:
+            # Streamed to disk rather than held in memory, so a large video
+            # neither doubles the process's footprint nor hides its progress.
+            async with client.stream("GET", url, headers=headers) as response:
+                response.raise_for_status()
+                if _is_sankaku_hotlink_placeholder(response.url):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Could not determine file type. Content-Type: {content_type}"
+                        detail="Sankaku refused the download and sent its hotlink placeholder instead",
                     )
 
-            if extension not in settings.allowed_extensions:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"File type {extension} not allowed. Allowed types: {settings.allowed_extensions}",
-                )
+                # Determine file extension from content-type or URL
+                content_type = response.headers.get('content-type', '').split(';')[0].strip()
+                extension = MIME_TO_EXT.get(content_type)
+                url_path = Path(parsed.path)
 
-            # Save to temporary location
-            temp_path = settings.uploads_dir / f"{token}{extension}"
+                if not extension:
+                    # Try to get from URL path
+                    url_extension = normalize_upload_extension(url_path.suffix.lower())
+                    if url_extension in settings.allowed_extensions:
+                        extension = url_extension
+                    else:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Could not determine file type. Content-Type: {content_type}"
+                        )
 
-            async with aiofiles.open(temp_path, "wb") as f:
-                await f.write(response.content)
+                if extension not in settings.allowed_extensions:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File type {extension} not allowed. Allowed types: {settings.allowed_extensions}",
+                    )
+
+                # Save to temporary location
+                temp_path = settings.uploads_dir / f"{token}{extension}"
+                total = int(response.headers.get("content-length") or 0) or None
+                progress = _start_fetch_progress(request.progressId, total)
+                size = 0
+                try:
+                    async with aiofiles.open(temp_path, "wb") as f:
+                        async for chunk in response.aiter_bytes(256 * 1024):
+                            await f.write(chunk)
+                            size += len(chunk)
+                            if progress is not None:
+                                progress["received"] = size
+                except BaseException:
+                    temp_path.unlink(missing_ok=True)
+                    raise
+                finally:
+                    if progress is not None:
+                        progress["done"] = True
 
             # Store token mapping
             upload_tokens[token] = temp_path
@@ -418,7 +483,7 @@ async def upload_from_url(request: UrlFetchRequest, current_user: User = Depends
             return {
                 "token": token,
                 "filename": filename,
-                "size": len(response.content),
+                "size": size,
                 "url": url,
             }
 
@@ -436,6 +501,43 @@ async def upload_from_url(request: UrlFetchRequest, current_user: User = Depends
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process URL: {str(e)}")
+    finally:
+        _active_downloads.discard(download_key)
+
+
+# Sankaku's front-ends; every other *.sankakucomplex.com host serves media.
+_SANKAKU_FRONTEND_HOSTS = {"chan", "www", "idol", "login", "beta", "legacy", "black", "white"}
+
+
+def _is_sankaku_media_host(host: str | None) -> bool:
+    host = (host or "").lower()
+    if not host.endswith(".sankakucomplex.com"):
+        return False
+    return host.removesuffix(".sankakucomplex.com") not in _SANKAKU_FRONTEND_HOSTS
+
+
+def _media_referer(host: str | None, referer: str) -> str:
+    # Sankaku's CDN answers a chan.sankakucomplex.com (or its own) referer by
+    # redirecting to a hotlink placeholder; the sankaku.app front-end's referer
+    # gets the real file, whichever Sankaku page the download started from.
+    if _is_sankaku_media_host(host):
+        return "https://sankaku.app/"
+    return referer
+
+
+def _is_sankaku_hotlink_placeholder(final_url) -> bool:
+    parsed = urlparse(str(final_url))
+    host = (parsed.hostname or "").lower()
+    return (host == "sankakucomplex.com" or host.endswith(".sankakucomplex.com")) and parsed.path.endswith("/redirect.png")
+
+
+@router.get("/from-url/progress/{progress_id}")
+async def from_url_progress(progress_id: str, current_user: User = Depends(get_current_user)):
+    """How far a followed /from-url download has got: bytes received and total."""
+    entry = _fetch_progress.get(progress_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown download")
+    return {"received": entry["received"], "total": entry["total"], "done": entry["done"]}
 
 
 def _normalize_fetch_url(url: str) -> str:

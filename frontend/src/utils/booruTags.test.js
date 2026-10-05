@@ -21,6 +21,8 @@ describe('detectBooruPost', () => {
       ['https://yande.re/post/show/1000000', 'moebooru'],
       ['https://konachan.com/post/show/42', 'moebooru'],
       ['https://e621.net/posts/3000000', 'e621'],
+      ['https://chan.sankakucomplex.com/posts/y0abNDZNoa2', 'sankaku'],
+      ['https://sankaku.app/posts/26MPwBzomRK?tags=rating%3As', 'sankaku'],
     ]
     cases.forEach(([url, siteId]) => {
       expect(booru.detectBooruPost(url)?.siteId, url).toBe(siteId)
@@ -138,6 +140,35 @@ describe('parsers', () => {
     ])
     expect(result.categories).toEqual({ hatsune_miku: 'character', vocaloid: 'copyright', '1girl': 'general' })
     expect(result.counts).toMatchObject({ character: 1, copyright: 1, general: 1 })
+  })
+
+  it('reads Sankaku tag types, rating, and API URL', () => {
+    const site = booru.detectBooruPost('https://sankaku.app/en/posts/y0abNDZNoa2')
+    expect(site.apiUrl).toBe('https://sankakuapi.com/posts/y0abNDZNoa2')
+    expect(site.preferApi).toBe(true)
+
+    const result = booru.parseSankakuJson({
+      id: 'y0abNDZNoa2',
+      rating: 's',
+      source: 'removed',
+      tags: [
+        { tagName: 'etotama', type: 3 },
+        { tagName: 'shirogumi_inc.', type: 2 },
+        { tagName: 'kii-tan', type: 4 },
+        { tagName: 'happy', type: 0 },
+        { tagName: 'png-to-jpg_conversion', type: 8 },
+      ],
+    }, { siteId: 'sankaku', label: 'Sankaku' })
+    expect(result.categories).toEqual({
+      etotama: 'copyright',
+      'shirogumi_inc.': 'artist',
+      'kii-tan': 'character',
+      happy: 'general',
+      'png-to-jpg_conversion': 'meta',
+    })
+    // Sankaku's "s" is safe, unlike Gelbooru's "sensitive".
+    expect(result.safety).toBe('safe')
+    expect(result.source).toBe('')
   })
 
   it('parses the XML Safebooru answers with instead of JSON', () => {

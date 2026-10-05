@@ -299,6 +299,16 @@ async function collectBooruTags(pageUrl, tabId) {
   if (!site) return null
   const context = { siteId: site.siteId, label: site.label }
 
+  if (site.preferApi) {
+    try {
+      const fromApi = site.parse(await fetchBooruJson(site.apiUrl), context)
+      if (fromApi) return fromApi
+    } catch {
+      // Hidden from anonymous requests; the open tab may still list the tags.
+    }
+    return resultFromScrape(await scrapeBooruTagsFromTab(tabId), context)
+  }
+
   // The open tab first: no request, no rate limit, and the only route that
   // works on Gelbooru, whose API wants credentials we do not ask for.
   const fromDom = resultFromScrape(await scrapeBooruTagsFromTab(tabId), context)
@@ -418,9 +428,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ;(async () => {
       try {
         const job = sanitizeSiteImportJob(msg.job, sender.tab?.url || '')
-        const key = SITE_IMPORT_JOB_PREFIX + crypto.randomUUID()
-        await chrome.storage.local.set({ [key]: { ...job, createdAt: Date.now() } })
-        await openPopup('site-import.html', new URLSearchParams({ job: key }), sender.tab)
+        // One import window per post: a second click brings the running one
+        // forward instead of downloading the same original again.
+        const postKey = siteImportPostKey(job)
+        if (openingSiteImports.has(postKey) || await focusSiteImportWindow(postKey)) {
+          sendResponse({ ok: true, alreadyOpen: true })
+          return
+        }
+        openingSiteImports.add(postKey)
+        try {
+          const key = SITE_IMPORT_JOB_PREFIX + crypto.randomUUID()
+          await chrome.storage.local.set({ [key]: { ...job, createdAt: Date.now() } })
+          const win = await openPopup('site-import.html', new URLSearchParams({ job: key }), sender.tab)
+          await rememberSiteImportWindow(postKey, win?.id)
+        } finally {
+          openingSiteImports.delete(postKey)
+        }
         sendResponse({ ok: true })
       } catch (error) {
         sendResponse({ ok: false, error: error?.message || String(error) })
@@ -619,6 +642,12 @@ function sanitizeSiteImportJob(raw, senderUrl) {
       throw new Error('Safebooru imports can only start from Safebooru.')
     }
     return globalThis.NekoBooruSiteImport.sanitizeSafebooruImportJob(job, sender.href)
+  }
+  if (job.kind === 'sankaku') {
+    if (!globalThis.NekoBooruSiteImport.isSankakuHost(sender.hostname)) {
+      throw new Error('Sankaku imports can only start from Sankaku.')
+    }
+    return globalThis.NekoBooruSiteImport.sanitizeSankakuImportJob(job, sender.href)
   }
   throw new Error('Unsupported site import request.')
 }
@@ -1413,6 +1442,63 @@ function frameFallbackFilename(raw) {
   return `${name}-frame`
 }
 
+const SITE_IMPORT_WINDOWS_KEY = 'nekobooruSiteImportWindows'
+// Imports whose window is being opened right now, so two quick clicks (the
+// cat and the Actions link) cannot both get past the check above.
+const openingSiteImports = new Set()
+
+function siteImportPostKey(job) {
+  return `${job?.kind || ''}:${job?.postId || job?.artworkId || ''}`
+}
+
+// Session storage survives the service worker sleeping, and is cleared with
+// the browser session - exactly as long as an import window can exist.
+async function siteImportWindows() {
+  try {
+    return (await chrome.storage.session.get(SITE_IMPORT_WINDOWS_KEY))[SITE_IMPORT_WINDOWS_KEY] || {}
+  } catch {
+    return {}
+  }
+}
+
+async function saveSiteImportWindows(windows) {
+  try {
+    await chrome.storage.session.set({ [SITE_IMPORT_WINDOWS_KEY]: windows })
+  } catch {
+    // No session storage: duplicates are still refused by the backend.
+  }
+}
+
+async function rememberSiteImportWindow(postKey, windowId) {
+  if (!Number.isInteger(windowId)) return
+  const windows = await siteImportWindows()
+  windows[postKey] = windowId
+  await saveSiteImportWindows(windows)
+}
+
+async function focusSiteImportWindow(postKey) {
+  const windows = await siteImportWindows()
+  const windowId = windows[postKey]
+  if (!Number.isInteger(windowId)) return false
+  try {
+    await chrome.windows.update(windowId, { focused: true, drawAttention: true })
+    return true
+  } catch {
+    // Closed since; forget it and open a fresh one.
+    delete windows[postKey]
+    await saveSiteImportWindows(windows)
+    return false
+  }
+}
+
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  const windows = await siteImportWindows()
+  const keys = Object.keys(windows).filter((key) => windows[key] === windowId)
+  if (!keys.length) return
+  keys.forEach((key) => delete windows[key])
+  await saveSiteImportWindows(windows)
+})
+
 async function openPopup(page, params, tab) {
   const opts = {
     url: chrome.runtime.getURL(page) + '?' + params.toString(),
@@ -1427,7 +1513,7 @@ async function openPopup(page, params, tab) {
     opts.top = pos.top
   }
 
-  chrome.windows.create(opts)
+  return chrome.windows.create(opts)
 }
 
 // Place the popup near the cursor, falling back to the centre of the browser

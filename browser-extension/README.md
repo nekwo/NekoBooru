@@ -48,11 +48,14 @@ When the media came from a booru post page, the popup imports that post's own
 tags — already split into artist / character / copyright / meta — along with its
 rating, and those categories are sent with the post so they survive the import.
 Supported: Danbooru (`*.donmai.us`), Gelbooru, Safebooru, rule34.xxx and other
-Gelbooru clones, yande.re / Konachan, and e621 / e926.
+Gelbooru clones, yande.re / Konachan, e621 / e926, and Sankaku (classic
+`chan.sankakucomplex.com` and `sankaku.app`).
 
 Tags are read from the open tab's sidebar first, which costs no request and is
 the only route that works on Gelbooru — its JSON API returns 401 without an API
-key. The site's JSON API is the fallback for when that tab is gone. Everything
+key. The site's JSON API is the fallback for when that tab is gone. Sankaku is
+the exception: its API is asked first, because its sidebar uses tag types
+(studio, genre, medium) the page reader does not know. Everything
 is additive: nothing you already typed is removed, and on any other site the
 import stays silent.
 
@@ -84,8 +87,27 @@ post pages, **NekoBooru** appears as a native-style text link directly to the
 right of the Favorite/Unfavorite action. On Safebooru it appears on the right
 side of the post action row, after **Edit | Respond**. It imports
 the site's original `file_url` plus its tag categories, with AI tagging
-disabled. Pixiv imports explicitly run and save AI tags, including when
-an original already exists; Gelbooru and Safebooru imports never invoke AI.
+disabled. On classic Sankaku Channel post pages, a cat icon in the
+neighbouring icons' colour sits right of the flag under the post, and
+**Import to NekoBooru** appears in the sidebar's Actions list, right under
+**Find similar**. On `sankaku.app` the cat sits immediately left of the heart
+(favourite count) in the post sidebar. Where none of these is found, a floating
+**NekoBooru** button sits in the bottom-right corner instead. All of them follow
+the site's in-app navigation. It imports the original `file_url`
+with Sankaku's tag types (studios file as artist, medium as meta) and a
+`sankaku_<id>` tag. If you are logged in to Sankaku in that browser, the import
+reuses the page's own session token, sent only to Sankaku's API, so explicit
+and members-only posts work. When Sankaku's API still refuses a post (it hides
+some from anonymous API requests even while you can see them), the import reads
+the page instead: the Details box's **Original** link, the sidebar's tags
+grouped by heading, and the rating badge. Sankaku spells qualified
+characters and series in full (`honoka_(dead_or_alive)`) where Danbooru,
+Gelbooru, and Safebooru abbreviate (`honoka_(doa)`), so imports look each one up
+on Danbooru, take its spelling, and keep the Sankaku one as a NekoBooru tag
+alias (which also merges a tag already imported under it). If Danbooru cannot be
+reached, the Sankaku names are kept. Logged out, Sankaku withholds those
+originals and the button says so. Pixiv imports explicitly run and save AI tags, including when
+an original already exists; Gelbooru, Safebooru, and Sankaku imports never invoke AI.
 Most services use temporary extension helper pages that submit the image/frame
 bytes directly instead of relying on a public image URL. TinEye and trace.moe
 open their official UIs and inject the captured image into their upload controls. The menu also includes
@@ -185,5 +207,8 @@ the extension needs to be signed/packaged.
 | `upload.html` / `upload.js` / `upload.css` | The upload popup UI + logic (CSS shared with the picker). |
 | `picker.html` / `picker.js` | The "insert from NekoBooru" browse/search popup. |
 | `options.html` / `options.js` | Settings page (instance URL). |
+| `trace-moe-buttons.js` | trace.moe content script: the result player's NekoBooru button. |
+| `trace-moe-core.js` | trace.moe helpers: filename parsing, scene description, Danbooru series lookup. |
+| `saucenao-links.js` | SauceNAO content script: rewrites dead old-format Sankaku links (`/post/show/<id>`) to `/posts/similar?id=<id>`. |
 | `native-host/` | Optional native messaging helper for starting the local app. |
 | `icons/` | Toolbar / store icons. |

@@ -101,6 +101,22 @@ const BOORU_SITES = [
     // Gelbooru itself rejects the call; the clones answer it fine.
     apiNeedsCredentials: (host) => host === 'gelbooru.com' || host.endsWith('.gelbooru.com'),
   },
+  {
+    id: 'sankaku',
+    label: 'Sankaku',
+    // Classic Sankaku Channel and sankaku.app share one API and post IDs.
+    matches: (host) => ['sankaku.app', 'chan.sankakucomplex.com', 'sankakucomplex.com'].includes(host),
+    postId: (url) => {
+      const match = url.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?posts\/([A-Za-z0-9]{1,32})\/?$/i)
+      return match ? match[1] : ''
+    },
+    apiUrl: (_url, id) => `https://sankakuapi.com/posts/${encodeURIComponent(id)}`,
+    parse: parseSankakuJson,
+    // Its sidebar uses tag types the DOM scraper does not know (studio, genre,
+    // medium), so the API is the better first answer; the DOM still covers
+    // posts the API hides from anonymous requests.
+    preferApi: true,
+  },
 ]
 
 function detectBooruPost(pageUrl) {
@@ -123,6 +139,7 @@ function detectBooruPost(pageUrl) {
     postId,
     apiUrl: site.apiUrl(url, postId),
     apiUsable: !(site.apiNeedsCredentials && site.apiNeedsCredentials(host)),
+    preferApi: Boolean(site.preferApi),
     parse: site.parse,
   }
 }
@@ -244,6 +261,41 @@ function parseGelbooruJson(payload, context) {
   return booruResult(collected, { ...context, rating: post.rating, source: post.source })
 }
 
+// Sankaku's own tag types: 2 studio, 5 genre, 8 medium and 9 meta sit beside
+// the Danbooru numbers. Studios read as the artist, the way Danbooru files them.
+const SANKAKU_TYPE_TO_CATEGORY = {
+  0: 'general',
+  1: 'artist',
+  2: 'artist',
+  3: 'copyright',
+  4: 'character',
+  5: 'general',
+  8: 'meta',
+  9: 'meta',
+}
+
+// Sankaku's "s" is safe, not Gelbooru's "sensitive", so translate the letter
+// before the shared rating mapping sees it.
+const SANKAKU_RATING_NAMES = { s: 'safe', q: 'questionable', e: 'explicit' }
+
+function parseSankakuJson(payload, context) {
+  const post = Array.isArray(payload) ? payload[0] : payload
+  if (!post || typeof post !== 'object') return null
+  const collected = {}
+  const rows = Array.isArray(post.tags) ? post.tags : []
+  rows.forEach((row) => {
+    addBooruTag(collected, row && (row.tagName || row.name_en || row.name), SANKAKU_TYPE_TO_CATEGORY[Number(row && row.type)])
+  })
+  if (!rows.length) (post.tag_names || []).forEach((name) => addBooruTag(collected, name, 'general'))
+  if (!Object.keys(collected).length) return null
+  const rating = String(post.rating || '').toLowerCase()
+  return booruResult(collected, {
+    ...context,
+    rating: SANKAKU_RATING_NAMES[rating] || rating,
+    source: post.source && /^https?:\/\//i.test(post.source) ? post.source : '',
+  })
+}
+
 // Applies the tag types from a Gelbooru-style /s=tag lookup onto an already
 // parsed result. Safebooru ignores json=1 on that endpoint and answers XML, so
 // both shapes are handled.
@@ -287,6 +339,10 @@ function scrapeBooruTagsFromPage() {
     'tag-type-model': 'character',
     'tag-type-species': 'general',
     'tag-type-lore': 'general',
+    // Sankaku's extra types.
+    'tag-type-studio': 'artist',
+    'tag-type-genre': 'general',
+    'tag-type-medium': 'meta',
     'tag-type-0': 'general',
     'tag-type-1': 'artist',
     'tag-type-3': 'copyright',
@@ -344,6 +400,7 @@ const booruTagApi = {
   parseE621Json,
   parseMoebooruJson,
   parseGelbooruJson,
+  parseSankakuJson,
   applyGelbooruTagTypes,
   parseGelbooruTagTypeXml,
   resultFromScrape,

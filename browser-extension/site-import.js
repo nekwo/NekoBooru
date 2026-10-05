@@ -12,6 +12,7 @@ const els = {
 }
 let instanceUrl = ''
 const siteImportCore = globalThis.NekoBooruSiteImport
+const SITE_LABELS = { gelbooru: 'Gelbooru', safebooru: 'Safebooru', sankaku: 'Sankaku' }
 
 init()
 
@@ -30,7 +31,9 @@ async function init() {
     if (!job) throw new Error('This import job expired. Click the site button again.')
     await ensureBackend()
     const resolved = job.kind === 'gelbooru' ? await resolveGelbooru(job) : job
+    const renames = await useDanbooruNames(resolved)
     await importAll(resolved)
+    await aliasSourceNames(renames)
   } catch (error) {
     setStatus(error?.message || String(error), 'error')
   }
@@ -80,6 +83,54 @@ async function resolveGelbooru(job) {
   }
 }
 
+// Sankaku spells qualified characters and series in full -
+// honoka_(dead_or_alive) - where Danbooru, Gelbooru, and Safebooru write
+// honoka_(doa). Take Danbooru's spelling so one character stays one tag.
+// Best effort: if the lookup fails the Sankaku names are imported unchanged.
+async function useDanbooruNames(job) {
+  if (job.kind !== 'sankaku') return {}
+  const media = Array.isArray(job.media) ? job.media : []
+  const tags = [...new Set(media.flatMap((item) => item.tags || []))]
+  const tagCategories = Object.assign({}, ...media.map((item) => item.tagCategories || {}))
+  let renames = {}
+  try {
+    const data = await api(`${instanceUrl}/api/site-imports/danbooru-names`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags, tagCategories }),
+    })
+    renames = data.renames || {}
+  } catch {
+    return {}
+  }
+  for (const item of media) {
+    item.tags = [...new Set((item.tags || []).map((tag) => renames[tag] || tag))]
+    for (const [from, to] of Object.entries(renames)) {
+      if (!item.tagCategories?.[from]) continue
+      item.tagCategories[to] = item.tagCategories[from]
+      delete item.tagCategories[from]
+    }
+  }
+  return renames
+}
+
+// Keep the source's spelling as an alias of the Danbooru one, so typing it
+// later lands on the same tag and a tag already imported under it is merged.
+// It is also stored as the tag's Sankaku name, which Sankaku searches use.
+async function aliasSourceNames(renames) {
+  for (const [alias, target] of Object.entries(renames || {})) {
+    try {
+      await NekoAuth.authFetch(`${instanceUrl}/api/tag-aliases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alias, target, sankakuName: alias }),
+      })
+    } catch {
+      // Already an alias, or NekoBooru went away; the post is imported either way.
+    }
+  }
+}
+
 async function importAll(job) {
   const allMedia = Array.isArray(job.media) ? job.media : []
   if (!allMedia.length) throw new Error('The source returned no original-resolution files.')
@@ -88,7 +139,7 @@ async function importAll(job) {
     ? (job.isUgoira
       ? 'Original Pixiv animation · MP4 conversion · Pixiv tags included · AI tagging enabled'
       : `${allMedia.length} original Pixiv page${allMedia.length === 1 ? '' : 's'} · Choose pages below · Pixiv tags included · AI tagging enabled`)
-    : `Original ${job.kind === 'safebooru' ? 'Safebooru' : 'Gelbooru'} file · source tags included · AI disabled`
+    : `Original ${SITE_LABELS[job.kind] || 'Gelbooru'} file · source tags included · AI disabled`
   renderItems(allMedia, job.kind === 'pixiv')
 
   const media = job.kind === 'pixiv' ? await choosePixivMedia(allMedia) : allMedia
@@ -103,7 +154,7 @@ async function importAll(job) {
       : `Importing ${index + 1} of ${media.length} at original resolution…`, 'working')
     setItem(rowIndex, 'working', item.type === 'ugoira' ? 'Converting to MP4…' : 'Downloading original…')
     try {
-      const result = await importOne(job, item)
+      const result = await importOne(job, item, (text) => setItem(rowIndex, 'working', text))
       results.push(result)
       const savedTags = job.kind === 'pixiv' ? 'AI tags saved' : 'source tags saved'
       setItem(rowIndex, 'done', result.duplicate
@@ -160,17 +211,25 @@ function choosePixivMedia(media) {
   })
 }
 
-async function importOne(job, item) {
+async function importOne(job, item, onProgress = () => {}) {
   if (!/^https:\/\//i.test(item.url || '')) throw new Error('Missing original file URL.')
   const uploadPath = item.type === 'ugoira' ? 'from-pixiv-ugoira' : 'from-url'
+  const progressId = item.type === 'ugoira' ? '' : crypto.randomUUID()
   const uploadPayload = item.type === 'ugoira'
     ? { url: item.url, frames: item.frames }
-    : { url: item.url, referer: item.referer || job.canonicalUrl }
-  const upload = await api(`${instanceUrl}/api/uploads/${uploadPath}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(uploadPayload),
-  })
+    : { url: item.url, referer: item.referer || job.canonicalUrl, progressId }
+  const stopFollowing = progressId ? followDownload(progressId, onProgress) : () => {}
+  let upload
+  try {
+    upload = await api(`${instanceUrl}/api/uploads/${uploadPath}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(uploadPayload),
+    })
+  } finally {
+    stopFollowing()
+  }
+  onProgress('Saving post…')
   const body = siteImportCore.siteImportPostBody(job, item, upload.token)
 
   const response = await NekoAuth.authFetch(`${instanceUrl}/api/posts`, {
@@ -184,6 +243,33 @@ async function importOne(job, item) {
     throw new Error(formatError(data.detail || `Post creation failed (HTTP ${response.status}).`))
   }
   return mergeDuplicate(job, data.detail, item)
+}
+
+// Poll the backend's byte count for a download once a second. Returns the
+// function that stops polling.
+function followDownload(progressId, onProgress) {
+  const started = Date.now()
+  let stopped = false
+  let timer = null
+  const tick = async () => {
+    try {
+      const response = await NekoAuth.authFetch(
+        `${instanceUrl}/api/uploads/from-url/progress/${encodeURIComponent(progressId)}`,
+        { cache: 'no-store' },
+      )
+      if (response.ok && !stopped) {
+        onProgress(siteImportCore.downloadProgressText(await response.json(), Date.now() - started))
+      }
+    } catch {
+      // Progress is a courtesy; the download itself carries on regardless.
+    }
+    if (!stopped) timer = setTimeout(tick, 1000)
+  }
+  timer = setTimeout(tick, 1000)
+  return () => {
+    stopped = true
+    clearTimeout(timer)
+  }
 }
 
 async function mergeDuplicate(job, detail, item) {

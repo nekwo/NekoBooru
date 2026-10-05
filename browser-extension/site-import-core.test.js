@@ -204,4 +204,177 @@ assert.deepEqual(
 )
 assert.ok(core.selectedSiteImportMedia(job.media, [1])[0].tags.includes('pixiv_122812376_p2'))
 
+// Sankaku: both front-ends, case-sensitive alphanumeric IDs.
+assert.equal(core.sankakuPostId('https://chan.sankakucomplex.com/posts/y0abNDZNoa2'), 'y0abNDZNoa2')
+assert.equal(core.sankakuPostId('https://sankaku.app/posts/26MPwBzomRK?tags=rating%3As&tab=explore'), '26MPwBzomRK')
+assert.equal(core.sankakuPostId('https://sankaku.app/en/posts/26MPwBzomRK'), '26MPwBzomRK')
+assert.equal(core.sankakuPostId('https://chan.sankakucomplex.com/post/show/123456'), '')
+assert.equal(core.sankakuPostId('https://sankaku.app/?tags=blue_hair'), '')
+assert.equal(core.sankakuPostId('https://idol.sankakucomplex.com/posts/y0abNDZNoa2'), '')
+assert.equal(core.sankakuPostId('https://sankaku.app.evil.example/posts/y0abNDZNoa2'), '')
+assert.equal(core.isSankakuHost('www.sankakucomplex.com'), true)
+// SauceNAO's old numeric links 404; posts/similar still resolves them.
+assert.equal(
+  core.sankakuLegacyPostUrl('https://chan.sankakucomplex.com/post/show/4491595'),
+  'https://chan.sankakucomplex.com/posts/similar?id=4491595',
+)
+assert.equal(
+  core.sankakuLegacyPostUrl('http://chan.sankakucomplex.com/en/post/show/4491595/'),
+  'https://chan.sankakucomplex.com/posts/similar?id=4491595',
+)
+assert.equal(core.sankakuLegacyPostUrl('https://chan.sankakucomplex.com/posts/y0abNDZNoa2'), '')
+assert.equal(core.sankakuLegacyPostUrl('https://idol.sankakucomplex.com/post/show/4491595'), '')
+assert.equal(core.sankakuLegacyPostUrl('https://evil.example/post/show/4491595'), '')
+assert.equal(core.sankakuSafety('s'), 'safe')
+assert.equal(core.sankakuSafety('q'), 'sketchy')
+assert.equal(core.sankakuSafety('e'), 'unsafe')
+const jwtLike = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXZhbHVl'
+assert.equal(core.sankakuAccessToken(jwtLike), jwtLike)
+assert.equal(core.sankakuAccessToken(JSON.stringify(jwtLike)), jwtLike)
+assert.equal(core.sankakuAccessToken('not a token; evil=1'), '')
+
+const sankakuPayload = {
+  id: 'y0abNDZNoa2',
+  rating: 's',
+  file_url: 'https://s.sankakucomplex.com/o/62/4e/624e.jpg?e=1791161510&m=abc',
+  file_type: 'image/jpeg',
+  width: 373,
+  height: 900,
+  tags: [
+    { tagName: 'etotama', type: 3 },
+    { tagName: 'encourage_films', type: 2 },
+    { tagName: 'kii-tan', type: 4 },
+    { tagName: 'clothing', type: 0 },
+    { tagName: 'official_art', type: 9 },
+    { tagName: 'png-to-jpg_conversion', type: 8 },
+    { tagName: 'honoka_(dead_or_alive)', type: 4 },
+  ],
+}
+const sankakuJob = core.sankakuImportJob(sankakuPayload, 'https://chan.sankakucomplex.com/posts/y0abNDZNoa2')
+assert.equal(sankakuJob.kind, 'sankaku')
+assert.equal(sankakuJob.canonicalUrl, 'https://chan.sankakucomplex.com/posts/y0abNDZNoa2')
+assert.equal(sankakuJob.groupTag, 'sankaku_y0abndznoa2')
+assert.equal(sankakuJob.media[0].url, sankakuPayload.file_url)
+assert.equal(sankakuJob.media[0].safety, 'safe')
+assert.deepEqual(sankakuJob.media[0].tagCategories, {
+  etotama: 'copyright',
+  encourage_films: 'artist',
+  'kii-tan': 'character',
+  clothing: 'general',
+  official_art: 'meta',
+  'png-to-jpg_conversion': 'meta',
+  'honoka_(dead_or_alive)': 'character',
+  sankaku_y0abndznoa2: 'meta',
+})
+assert.throws(
+  () => core.sankakuImportJob({ ...sankakuPayload, file_url: '' }, 'https://sankaku.app/posts/y0abNDZNoa2'),
+  /Log in to Sankaku/,
+)
+// Questionable/explicit posts: the API withholds file_url, the page shows it.
+const pageOriginal = 'https://s.sankakucomplex.com/data/ab/cd/abcd.jpg?e=1&m=x'
+assert.equal(
+  core.sankakuImportJob({ ...sankakuPayload, file_url: null }, 'https://chan.sankakucomplex.com/en/posts/y0abNDZNoa2', pageOriginal).media[0].url,
+  pageOriginal,
+)
+assert.equal(core.sankakuOriginalFromPage('https://evil.example/abcd.jpg'), '')
+// A page link back to the front-end is not an original file.
+assert.equal(core.sankakuOriginalFromPage('https://chan.sankakucomplex.com/posts/e8M5Yy3XpMz'), '')
+assert.equal(core.sankakuOriginalFromPage('https://v.sankakucomplex.com/data/ab/cd/abcd.mp4?e=1'), 'https://v.sankakucomplex.com/data/ab/cd/abcd.mp4?e=1')
+assert.equal(sankakuJob.media[0].referer, 'https://sankaku.app/')
+assert.equal(core.sankakuOriginalFromPage('http://s.sankakucomplex.com/data/abcd.jpg'), '')
+assert.throws(
+  () => core.sankakuImportJob({ ...sankakuPayload, file_url: null }, 'https://sankaku.app/posts/y0abNDZNoa2', 'https://evil.example/x.jpg'),
+  /Log in to Sankaku/,
+)
+assert.throws(
+  () => core.sankakuImportJob(sankakuPayload, 'https://sankaku.app/posts/otherPost1'),
+  /did not return this post/,
+)
+
+const appJob = core.sankakuImportJob({ ...sankakuPayload, file_type: 'video/mp4' }, 'https://sankaku.app/posts/y0abNDZNoa2')
+const sanitizedSankaku = core.sanitizeSankakuImportJob(appJob, 'https://sankaku.app/posts/y0abNDZNoa2?tab=explore')
+assert.equal(sanitizedSankaku.canonicalUrl, 'https://sankaku.app/posts/y0abNDZNoa2')
+assert.equal(sanitizedSankaku.media[0].type, 'video')
+assert.equal(sanitizedSankaku.media[0].tagCategories.etotama, 'copyright')
+assert.throws(
+  () => core.sanitizeSankakuImportJob(appJob, 'https://sankaku.app/posts/otherPost1'),
+  /post ID mismatch/,
+)
+assert.throws(
+  () => core.sanitizeSankakuImportJob({ ...appJob, media: [{ ...appJob.media[0], url: 'https://evil.example/x.jpg' }] }, 'https://sankaku.app/posts/y0abNDZNoa2'),
+  /trusted original/,
+)
+
+// Login-only posts: rebuilt from the page's Original link, sidebar and rating.
+const pageJob = core.sankakuPageImportJob({
+  originalUrl: 'https://s.sankakucomplex.com/o/aa/bb/aabb.png?e=1&m=x',
+  dimensions: '1200x1600 (2.1 MB PNG)',
+  rating: 'R15',
+  tags: [
+    { name: 'honoka_(dead_or_alive)', heading: 'Character' },
+    { name: 'dead_or_alive', heading: 'Copyright' },
+    { name: 'team_ninja', heading: 'Studio' },
+    { name: 'flower', heading: 'Flora' },
+    { name: 'official_art', heading: 'Medium' },
+  ],
+}, 'https://chan.sankakucomplex.com/en/posts/6Qa8Zo3plR9')
+assert.equal(pageJob.media[0].url, 'https://s.sankakucomplex.com/o/aa/bb/aabb.png?e=1&m=x')
+assert.equal(pageJob.media[0].width, 1200)
+assert.equal(pageJob.media[0].height, 1600)
+assert.equal(pageJob.media[0].safety, 'sketchy')
+assert.equal(pageJob.media[0].referer, 'https://sankaku.app/')
+assert.deepEqual(pageJob.media[0].tagCategories, {
+  'honoka_(dead_or_alive)': 'character',
+  dead_or_alive: 'copyright',
+  team_ninja: 'artist',
+  flower: 'general',
+  official_art: 'meta',
+  sankaku_6qa8zo3plr9: 'meta',
+})
+assert.equal(core.sankakuHeadingCategory('Series'), 'copyright')
+assert.equal(core.sankakuHeadingCategory('Characters:'), 'character')
+assert.equal(core.sankakuPageSafety('G'), 'safe')
+assert.equal(core.sankakuPageSafety('R18'), 'unsafe')
+assert.throws(
+  () => core.sankakuPageImportJob({ originalUrl: '' }, 'https://chan.sankakucomplex.com/en/posts/6Qa8Zo3plR9'),
+  /logged-in users/,
+)
+
+// Download progress for slow sources.
+assert.equal(
+  core.downloadProgressText({ received: 12.3 * 1048576, total: 36 * 1048576 }, 70000),
+  'Downloading original… 12.3 / 36.0 MB (34%) · 180 KB/s · 70s',
+)
+assert.equal(core.downloadProgressText({ received: 0, total: null }, 400), 'Downloading original… 0.0 MB · 0s')
+assert.equal(
+  core.downloadProgressText({ received: 2 * 1048576, total: null }, 4000),
+  'Downloading original… 2.0 MB · 512 KB/s · 4s',
+)
+
+// Sankaku's share / reaction / flag row: find the flag to put the cat after.
+function iconControl(label, parent, attrs = {}) {
+  const icon = { getAttribute: (name) => attrs[`icon:${name}`] || null }
+  const node = {
+    textContent: '',
+    title: attrs.title || '',
+    dataset: {},
+    parentElement: parent,
+    getAttribute: (name) => (name === 'aria-label' ? label : (attrs[name] || null)),
+    querySelector: (selector) => (/svg|img|use/.test(selector) ? icon : null),
+    contains: (other) => other === node,
+  }
+  return node
+}
+const sankakuRow = { contains: () => true }
+const sankakuShare = iconControl('Share', sankakuRow)
+const sankakuReact = iconControl('', sankakuRow)
+const sankakuFlag = iconControl('', sankakuRow, { 'icon:class': 'icon-flag' })
+assert.equal(core.selectSankakuFlagControl([sankakuShare, sankakuReact, sankakuFlag]), sankakuFlag)
+const reportButton = iconControl('Report post', sankakuRow)
+assert.equal(core.selectSankakuFlagControl([sankakuShare, sankakuReact, reportButton]), reportButton)
+// Unlabelled flag: the last icon in the Share control's row.
+const unlabelledFlag = iconControl('', sankakuRow)
+assert.equal(core.selectSankakuFlagControl([sankakuShare, sankakuReact, unlabelledFlag]), unlabelledFlag)
+assert.equal(core.selectSankakuFlagControl([sankakuReact]), null)
+
 console.log('site-import-core tests passed')

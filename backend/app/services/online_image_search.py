@@ -18,6 +18,11 @@ import httpx
 from .booru_suggest import DANBOORU, GELBOORU, _get_json, gelbooru_credentials
 
 USER_AGENT = "NekoBooru/1.0 (per-post exact lookup)"
+# Classic Sankaku Channel and sankaku.app are front-ends over this one API.
+SANKAKU_API = "https://sankakuapi.com"
+SANKAKU = "https://sankaku.app"
+# Sankaku's "s" is safe, not Danbooru's "sensitive", so name the rating.
+SANKAKU_RATINGS = {"s": "safe", "q": "questionable", "e": "explicit"}
 DEFAULT_TIMEOUT = 6.0
 CACHE_TTL_SECONDS = 900.0
 CACHE_MAX_ENTRIES = 512
@@ -82,6 +87,31 @@ def _gelbooru_match(row: dict) -> dict | None:
     }
 
 
+def _sankaku_match(row: dict) -> dict | None:
+    post_id = str(row.get("id") or "").strip()
+    if not post_id.isalnum():
+        return None
+    rating = str(row.get("rating") or "").lower()
+    return {
+        "provider": "sankaku",
+        "providerLabel": "Sankaku",
+        "id": post_id,
+        "postUrl": f"{SANKAKU}/posts/{post_id}",
+        # Anonymous answers leave file_url empty on explicit posts.
+        "fileUrl": row.get("file_url") or row.get("sample_url") or row.get("preview_url"),
+        "source": row.get("source") or None,
+        "width": row.get("width"),
+        "height": row.get("height"),
+        "rating": SANKAKU_RATINGS.get(rating, rating or None),
+        "md5": row.get("md5") or None,
+    }
+
+
+def parse_sankaku_matches(payload) -> list[dict]:
+    rows = payload if isinstance(payload, list) else []
+    return [match for row in rows if isinstance(row, dict) if (match := _sankaku_match(row))]
+
+
 def parse_danbooru_matches(payload) -> list[dict]:
     rows = payload if isinstance(payload, list) else []
     return [match for row in rows if isinstance(row, dict) if (match := _danbooru_match(row))]
@@ -112,7 +142,7 @@ async def find_exact_online_matches(
     limit: int = 10,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> dict:
-    """Return byte-exact Danbooru/Gelbooru matches for a stored post."""
+    """Return byte-exact Danbooru/Gelbooru/Sankaku matches for a stored post."""
     md5 = await asyncio.to_thread(calculate_md5, file_path)
     cached = _cache.get(md5)
     if cached and cached[0] > time.monotonic():
@@ -126,22 +156,27 @@ async def find_exact_online_matches(
     gelbooru_url = f"{GELBOORU}/index.php?" + urllib.parse.urlencode(
         _gelbooru_post_query(md5, limit)
     )
+    sankaku_url = f"{SANKAKU_API}/posts?" + urllib.parse.urlencode(
+        {"tags": f"md5:{md5}", "limit": limit}
+    )
 
     async with httpx.AsyncClient(
         headers={"User-Agent": USER_AGENT},
         timeout=timeout,
         follow_redirects=True,
     ) as client:
-        danbooru_payload, gelbooru_payload = await asyncio.gather(
+        danbooru_payload, gelbooru_payload, sankaku_payload = await asyncio.gather(
             _get_json(client, danbooru_url, "danbooru"),
             _get_json(client, gelbooru_url, "gelbooru"),
+            _get_json(client, sankaku_url, "sankaku"),
         )
 
     danbooru_matches = parse_danbooru_matches(danbooru_payload)
     gelbooru_matches = parse_gelbooru_matches(gelbooru_payload)
+    sankaku_matches = parse_sankaku_matches(sankaku_payload)
     answer = {
         "md5": md5,
-        "matches": [*danbooru_matches, *gelbooru_matches],
+        "matches": [*danbooru_matches, *gelbooru_matches, *sankaku_matches],
         "providers": [
             {
                 "id": "danbooru",
@@ -155,11 +190,17 @@ async def find_exact_online_matches(
                 "available": gelbooru_payload is not None,
                 "count": len(gelbooru_matches),
             },
+            {
+                "id": "sankaku",
+                "label": "Sankaku",
+                "available": sankaku_payload is not None,
+                "count": len(sankaku_matches),
+            },
         ],
     }
     # An answered miss is worth caching; a total network failure is not. This
     # makes repeated per-post checks cheap without hiding transient outages.
-    if danbooru_payload is not None or gelbooru_payload is not None:
+    if any(payload is not None for payload in (danbooru_payload, gelbooru_payload, sankaku_payload)):
         if len(_cache) >= CACHE_MAX_ENTRIES:
             oldest = min(_cache, key=lambda key: _cache[key][0])
             _cache.pop(oldest, None)

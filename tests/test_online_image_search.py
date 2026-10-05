@@ -47,6 +47,27 @@ class OnlineImageSearchTests(unittest.TestCase):
         self.assertEqual(gelbooru[0]["postUrl"], "https://gelbooru.com/index.php?page=post&s=view&id=84")
         self.assertEqual(gelbooru[0]["height"], 1000)
 
+    def test_parses_sankaku_matches_with_string_ids(self):
+        from app.services import online_image_search
+
+        sankaku = online_image_search.parse_sankaku_matches([
+            {
+                "id": "y0abNDZNoa2",
+                "file_url": "",
+                "sample_url": "https://s.sankakucomplex.com/o/62/4e/sample.jpg",
+                "width": 373,
+                "height": 900,
+                "rating": "s",
+                "md5": "d" * 32,
+            },
+            {"id": "../evil"},
+        ])
+
+        self.assertEqual(len(sankaku), 1)
+        self.assertEqual(sankaku[0]["postUrl"], "https://sankaku.app/posts/y0abNDZNoa2")
+        self.assertEqual(sankaku[0]["fileUrl"], "https://s.sankakucomplex.com/o/62/4e/sample.jpg")
+        self.assertEqual(sankaku[0]["rating"], "safe")
+
     def test_gelbooru_exact_query_uses_saved_credentials(self):
         from app.services import online_image_search
 
@@ -72,14 +93,18 @@ class OnlineImageSearchTests(unittest.TestCase):
             get_json = AsyncMock(side_effect=[
                 [{"id": 1, "md5": hashlib.md5(data).hexdigest()}],
                 {"post": [{"id": 2, "md5": hashlib.md5(data).hexdigest()}]},
+                [{"id": "abc3", "md5": hashlib.md5(data).hexdigest()}],
             ])
             with patch.object(online_image_search, "_get_json", get_json):
                 result = asyncio.run(online_image_search.find_exact_online_matches(file_path))
 
         self.assertEqual(result["md5"], hashlib.md5(data).hexdigest())
-        self.assertEqual([row["provider"] for row in result["matches"]], ["danbooru", "gelbooru"])
-        self.assertEqual([row["count"] for row in result["providers"]], [1, 1])
-        self.assertEqual(get_json.await_count, 2)
+        self.assertEqual([row["provider"] for row in result["matches"]], ["danbooru", "gelbooru", "sankaku"])
+        self.assertEqual([row["count"] for row in result["providers"]], [1, 1, 1])
+        self.assertEqual(get_json.await_count, 3)
+        sankaku_url = get_json.await_args_list[2].args[1]
+        self.assertTrue(sankaku_url.startswith("https://sankakuapi.com/posts?"))
+        self.assertIn(f"md5%3A{hashlib.md5(data).hexdigest()}", sankaku_url)
 
     def test_answered_exact_lookup_is_cached(self):
         from app.services import online_image_search
@@ -88,13 +113,13 @@ class OnlineImageSearchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             file_path = Path(tmp) / "sample.png"
             file_path.write_bytes(b"cached exact lookup")
-            get_json = AsyncMock(side_effect=[[{"id": 1}], {"post": []}])
+            get_json = AsyncMock(side_effect=[[{"id": 1}], {"post": []}, []])
             with patch.object(online_image_search, "_get_json", get_json):
                 first = asyncio.run(online_image_search.find_exact_online_matches(file_path))
                 second = asyncio.run(online_image_search.find_exact_online_matches(file_path))
 
         self.assertIs(first, second)
-        self.assertEqual(get_json.await_count, 2)
+        self.assertEqual(get_json.await_count, 3)
 
 
 if __name__ == "__main__":
