@@ -342,12 +342,23 @@ def _restart_waiter(argv: list[str]) -> int:
     except (TypeError, ValueError):
         port = int(settings.port)
     executable = argv[2] if len(argv) > 2 else sys.executable
+    try:
+        old_pid = int(argv[3]) if len(argv) > 3 else 0
+    except (TypeError, ValueError):
+        old_pid = 0
 
-    for _ in range(80):
-        if not _health_ok(port):
-            break
-        time.sleep(0.25)
-    time.sleep(0.35)
+    # Relaunch once the old app has exited: a lingering one still holds the
+    # instance lock, and the relaunch would quit as "already running".
+    if old_pid:
+        from app.process_wait import wait_for_exit
+
+        wait_for_exit(old_pid, timeout=30)
+    else:
+        for _ in range(80):
+            if not _health_ok(port):
+                break
+            time.sleep(0.25)
+        time.sleep(0.35)
     kwargs = {}
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
@@ -360,7 +371,7 @@ def _spawn_restart_waiter() -> None:
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
     subprocess.Popen(
-        [sys.executable, _RESTART_WAITER_ARG, str(settings.port), sys.executable],
+        [sys.executable, _RESTART_WAITER_ARG, str(settings.port), sys.executable, str(os.getpid())],
         cwd=str(runtime_paths.app_dir),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -420,6 +431,7 @@ def main():
             log_level="info",
             access_log=False,
             log_config=None,
+            timeout_graceful_shutdown=5,
         )
     )
     tray = start_windows_tray(

@@ -163,11 +163,17 @@ async def subscribe(job_id: str):
         current = await snapshot(job_id)
         if current is not None:
             yield current
+            if current.get("status") in TERMINAL_STATES:
+                return
         while True:
             try:
-                yield await asyncio.wait_for(queue.get(), timeout=15)
+                payload = await asyncio.wait_for(queue.get(), timeout=15)
             except asyncio.TimeoutError:
                 yield None
+                continue
+            yield payload
+            if (payload or {}).get("status") in TERMINAL_STATES:
+                return
     finally:
         listeners = _subscribers.get(job_id)
         if listeners is not None:

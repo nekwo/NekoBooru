@@ -51,12 +51,25 @@ def _restart_waiter(argv: list[str]) -> int:
     except (TypeError, ValueError):
         port = 8772
     executable = argv[2] if len(argv) > 2 else sys.executable
+    try:
+        old_pid = int(argv[3]) if len(argv) > 3 else 0
+    except (TypeError, ValueError):
+        old_pid = 0
 
-    for _ in range(80):
-        if not _health_ok(port):
-            break
-        time.sleep(0.25)
-    time.sleep(0.35)
+    # Relaunch the moment the old server has actually exited and released the
+    # port. The old process has a 5 s graceful-shutdown cap, so this is quick;
+    # health polling remains only for a waiter started without a pid.
+    if old_pid:
+        sys.path.insert(0, str(_backend_dir()))
+        from app.process_wait import wait_for_exit
+
+        wait_for_exit(old_pid, timeout=30)
+    else:
+        for _ in range(80):
+            if not _health_ok(port):
+                break
+            time.sleep(0.25)
+        time.sleep(0.35)
     _popen_hidden([executable, "run_prod.py"])
     return 0
 
@@ -127,6 +140,9 @@ if __name__ == "__main__":
             reload=False,
             log_level="info",
             access_log=False,
+            # Without a cap, one long request (a slow video download, an open
+            # progress stream) holds a restart hostage indefinitely.
+            timeout_graceful_shutdown=5,
         )
     )
     restart_state = {"requested": False}
@@ -135,7 +151,14 @@ if __name__ == "__main__":
         if restart_state["requested"]:
             return {"status": "restarting", "message": "Restart is already in progress."}
         restart_state["requested"] = True
-        _popen_hidden([_python_executable(), "run_prod.py", _RESTART_WAITER_ARG, str(settings.port), _python_executable()])
+        _popen_hidden([
+            _python_executable(),
+            "run_prod.py",
+            _RESTART_WAITER_ARG,
+            str(settings.port),
+            _python_executable(),
+            str(os.getpid()),
+        ])
         server.should_exit = True
         return {
             "status": "restarting",

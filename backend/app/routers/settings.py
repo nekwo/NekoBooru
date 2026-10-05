@@ -1,4 +1,5 @@
 """Settings management router."""
+import asyncio
 import os
 from pathlib import Path
 from typing import Optional
@@ -396,7 +397,7 @@ async def delete_ytdlp_cookies(current_user: User = Depends(get_current_user)):
 @router.get("/ytdlp")
 async def get_ytdlp_status(current_user: User = Depends(get_current_user)):
     """Get yt-dlp version, import path, update policy, and update job state."""
-    return ytdlp_manager.status()
+    return await asyncio.to_thread(ytdlp_manager.status)
 
 
 @router.put("/ytdlp")

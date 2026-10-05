@@ -1,6 +1,8 @@
 """Runtime diagnostics and packaged AI runtime installer endpoints."""
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -21,7 +23,8 @@ class AiRuntimeInstallRequest(BaseModel):
 
 @router.get("/status")
 async def get_runtime_status(current_user: User = Depends(get_current_user)):
-    return runtime_status()
+    # Spawns ffmpeg/ffprobe and probes the AI runtimes: keep it off the event loop.
+    return await asyncio.to_thread(runtime_status)
 
 
 @router.get("/ai/profiles")

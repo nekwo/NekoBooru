@@ -1,4 +1,5 @@
 """Application update endpoints."""
+import asyncio
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
@@ -20,7 +21,8 @@ class UpdateSettingsRequest(BaseModel):
 
 @router.get("/status")
 async def get_update_status(auto: bool = False, current_user: User = Depends(get_current_user)):
-    return update_service.status(auto_check=auto)
+    # An auto check calls GitHub (up to 12 s); keep it off the event loop.
+    return await asyncio.to_thread(update_service.status, auto_check=auto)
 
 
 @router.put("/settings")
@@ -30,4 +32,4 @@ async def put_update_settings(request: UpdateSettingsRequest, current_user: User
 
 @router.post("/check")
 async def check_updates(current_user: User = Depends(get_current_user)):
-    return update_service.check_now()
+    return await asyncio.to_thread(update_service.check_now)

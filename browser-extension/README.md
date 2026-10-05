@@ -151,8 +151,11 @@ native launcher helper once:
 4. Reload the extension.
 
 After that, the upload popup shows **Start NekoBooru** when it cannot reach the
-API. The helper starts the backend on `127.0.0.1:8772` and the frontend on
-`127.0.0.1:5173`.
+API. The helper starts the backend on `127.0.0.1:8772`, which serves the built
+UI from `frontend/dist` on the same port. To also run the Vite dev server on
+`127.0.0.1:5173` (live reload while working on the frontend), add
+`"frontendDev": true` to
+`%LOCALAPPDATA%\NekoBooru\native-messaging-hosts\launcher-config.json`.
 
 ## Install (Firefox)
 

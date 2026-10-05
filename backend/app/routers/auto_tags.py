@@ -115,7 +115,9 @@ async def put_auto_tag_settings(body: AutoTagSettingsBody, current_user: User = 
 
 @router.get("/status")
 async def get_auto_tag_status(current_user: User = Depends(get_current_user)):
-    return tagger_status()
+    # The first call imports torch and probes CUDA (seconds); in a thread it
+    # no longer stalls every other request behind it.
+    return await asyncio.to_thread(tagger_status)
 
 
 @router.post("/model/download")

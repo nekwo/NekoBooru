@@ -5,6 +5,7 @@ import asyncio
 import importlib
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,11 @@ from .settings import SettingsManager
 
 
 VALID_POLICIES = {"manual", "startup_latest", "startup_pinned"}
+# "Update on startup" checks PyPI at most this often. A pip run on every boot
+# made each restart wait on it, and dev reloads queued one behind another.
+STARTUP_CHECK_INTERVAL_SECONDS = 24 * 3600
+# Let the server finish starting before pip competes with it for disk and CPU.
+STARTUP_UPDATE_DELAY_SECONDS = 30
 
 
 @dataclass
@@ -30,6 +36,25 @@ class YtdlpUpdateJob:
 
 _job = YtdlpUpdateJob()
 _lock = asyncio.Lock()
+
+
+def _hidden_window() -> dict:
+    if sys.platform != "win32":
+        return {}
+    return {"creationflags": subprocess.CREATE_NO_WINDOW}
+
+
+def _reload_ytdlp() -> dict:
+    """Pick up the freshly installed yt-dlp; imports are slow, so off the loop."""
+    importlib.invalidate_caches()
+    try:
+        import yt_dlp
+
+        importlib.reload(yt_dlp.version)
+        importlib.reload(yt_dlp)
+    except Exception:
+        pass
+    return installed_info()
 
 
 def display_path(raw_path: str) -> str:
@@ -98,6 +123,27 @@ def status() -> dict:
     }
 
 
+def _startup_marker() -> Path:
+    return settings.cache_dir / "ytdlp-startup-update"
+
+
+def _startup_update_due(target: str) -> bool:
+    """Whether a startup update should run: once a day, or when the pin changes."""
+    try:
+        last_target, last_time = _startup_marker().read_text(encoding="utf-8").split("\n", 1)
+        return last_target != target or time.time() - float(last_time) >= STARTUP_CHECK_INTERVAL_SECONDS
+    except (OSError, ValueError):
+        return True
+
+
+def _record_startup_update(target: str) -> None:
+    try:
+        _startup_marker().parent.mkdir(parents=True, exist_ok=True)
+        _startup_marker().write_text(f"{target}\n{time.time()}", encoding="utf-8")
+    except OSError:
+        pass
+
+
 async def maybe_update_on_startup() -> None:
     cfg = load_settings()
     if cfg["updatePolicy"] == "manual":
@@ -105,10 +151,13 @@ async def maybe_update_on_startup() -> None:
     if cfg["updatePolicy"] == "startup_pinned" and not cfg["pinnedVersion"]:
         return
     target = cfg["pinnedVersion"] if cfg["updatePolicy"] == "startup_pinned" else "latest"
-    await start_update(target)
+    if not _startup_update_due(target):
+        return
+    _record_startup_update(target)
+    await start_update(target, delay=STARTUP_UPDATE_DELAY_SECONDS)
 
 
-async def start_update(target: str = "latest") -> dict:
+async def start_update(target: str = "latest", *, delay: float = 0) -> dict:
     if target != "latest":
         target = str(target or "").strip()
         if not target:
@@ -120,15 +169,28 @@ async def start_update(target: str = "latest") -> dict:
         _job.target = target
         _job.started_at = None
         _job.finished_at = None
-        _job.before_version = installed_info().get("version")
+        _job.before_version = (await asyncio.to_thread(installed_info)).get("version")
         _job.after_version = None
         _job.error = None
         _job.output = ""
-        asyncio.create_task(_run_update(target))
+        asyncio.create_task(_run_update(target, delay=delay))
         return asdict(_job)
 
 
-async def _run_update(target: str) -> None:
+def _pip_log() -> Path:
+    return settings.cache_dir / "ytdlp-update.log"
+
+
+def _read_pip_log() -> str:
+    try:
+        return _pip_log().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+async def _run_update(target: str, *, delay: float = 0) -> None:
+    if delay:
+        await asyncio.sleep(delay)
     _job.status = "running"
     _job.started_at = datetime.utcnow().isoformat()
     package = "yt-dlp" if target == "latest" else f"yt-dlp=={target}"
@@ -136,30 +198,23 @@ async def _run_update(target: str) -> None:
     if target == "latest":
         cmd.extend(["--upgrade-strategy", "eager"])
     try:
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            check=False,
-        )
-        _job.output = (proc.stdout or "")[-12000:]
+        # A child process watched from the event loop rather than a thread
+        # blocking in subprocess.run: Python joins executor threads at exit, so
+        # a running pip used to hold the server open on shutdown and restart.
+        # On shutdown pip simply finishes on its own.
+        # Output goes to a file: an unread pipe could fill and stall pip.
+        _pip_log().parent.mkdir(parents=True, exist_ok=True)
+        with _pip_log().open("w", encoding="utf-8", errors="replace") as log:
+            proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, **_hidden_window())
+        while proc.poll() is None:
+            await asyncio.sleep(1)
+        _job.output = (await asyncio.to_thread(_read_pip_log))[-12000:]
         if proc.returncode != 0:
             _job.status = "failed"
             _job.error = f"pip exited with code {proc.returncode}"
             return
 
-        importlib.invalidate_caches()
-        try:
-            import yt_dlp
-
-            importlib.reload(yt_dlp.version)
-            importlib.reload(yt_dlp)
-        except Exception:
-            pass
-        _job.after_version = installed_info().get("version")
+        _job.after_version = (await asyncio.to_thread(_reload_ytdlp)).get("version")
         _job.status = "completed"
     except Exception as exc:
         _job.status = "failed"

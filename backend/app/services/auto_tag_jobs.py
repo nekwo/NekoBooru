@@ -61,28 +61,39 @@ async def _inherit_tags_from_similar(
     if owner_id is not None:
         conditions.append(Post.owner_id == owner_id)
 
-    rows = (
-        await db.execute(
-            select(Post).options(selectinload(Post.tags)).where(*conditions)
-        )
-    ).scalars().all()
+    # Only id and hash for the scan: loading every post with its tags made
+    # each preview hydrate the whole library (~8k posts, ~340k tag rows) to
+    # find the handful within reach. Tags load for those near matches only.
+    hashes = (await db.execute(select(Post.id, Post.phash).where(*conditions))).all()
 
     max_dist = opts.inheritSimilarMaxDistance
     min_tags = opts.inheritSimilarMinTags
-    tag_votes: dict[str, int] = {}
-    matched: list[dict] = []
-
-    for post in rows:
+    near: dict[int, int] = {}
+    for post_id, post_phash in hashes:
         try:
-            dist = bin(target_int ^ int(post.phash, 16)).count("1")
+            dist = bin(target_int ^ int(post_phash, 16)).count("1")
         except (TypeError, ValueError):
             continue
-        if dist > max_dist:
-            continue
-        post_tag_names = [t.name for t in (post.tags or [])]
+        if dist <= max_dist:
+            near[post_id] = dist
+
+    tags_by_post: dict[int, list[str]] = {post_id: [] for post_id in near}
+    if near:
+        tag_rows = await db.execute(
+            select(PostTag.c.post_id, Tag.name)
+            .join(Tag, Tag.id == PostTag.c.tag_id)
+            .where(PostTag.c.post_id.in_(list(near)))
+        )
+        for post_id, name in tag_rows.all():
+            tags_by_post[post_id].append(name)
+
+    tag_votes: dict[str, int] = {}
+    matched: list[dict] = []
+    for post_id, dist in near.items():
+        post_tag_names = tags_by_post[post_id]
         if len(post_tag_names) < min_tags:
             continue
-        matched.append({"id": post.id, "distance": dist, "tagCount": len(post_tag_names)})
+        matched.append({"id": post_id, "distance": dist, "tagCount": len(post_tag_names)})
         for name in post_tag_names:
             tag_votes[name] = tag_votes.get(name, 0) + 1
 

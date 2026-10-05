@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 """Native messaging host that starts local NekoBooru.
 
-In source mode it starts the backend plus Vite frontend. In packaged mode it
-starts the installed app executable and uses the backend-served UI.
+In source mode it starts the backend, which serves the committed
+frontend/dist build; the Vite dev server is started only when the launcher
+config sets "frontendDev": true. In packaged mode it starts the installed app
+executable and uses the backend-served UI.
 """
 
 from __future__ import annotations
@@ -72,6 +74,15 @@ def source_backend_port() -> int:
         return int(cfg.get("backendPort") or source_server_config().get("port") or os.environ.get("NEKO_PORT") or BACKEND_PORT)
     except Exception:
         return BACKEND_PORT
+
+
+def frontend_dev_server() -> bool:
+    """Whether source mode should also run Vite.
+
+    Off by default: the backend already serves the built UI, and Vite added
+    seconds of startup plus an on-demand compile of every page to each launch.
+    """
+    return bool(load_config().get("frontendDev"))
 
 
 def source_frontend_port() -> int:
@@ -221,6 +232,16 @@ def start_source_servers() -> dict:
             python = Path(sys.executable)
         popen_hidden([str(python), "run_prod.py"], root / "backend", logs / "native-backend.log")
 
+    if not frontend_dev_server():
+        return {
+            "ok": True,
+            "mode": "source",
+            "backendAlreadyRunning": backend_running,
+            "frontendAlreadyRunning": backend_running,
+            "backendUrl": f"http://{HOST}:{backend_port}",
+            "frontendUrl": f"http://{HOST}:{backend_port}",
+        }
+
     if not frontend_running:
         npm = "npm.cmd" if os.name == "nt" else "npm"
         popen_hidden([npm, "run", "dev", "--", "--host", HOST, "--port", str(frontend_port)], root / "frontend", logs / "native-frontend.log")
@@ -238,7 +259,7 @@ def start_source_servers() -> dict:
 def status() -> dict:
     app_path = installed_app_path()
     backend_port = packaged_backend_port() if app_path else source_backend_port()
-    frontend_port = backend_port if app_path else source_frontend_port()
+    frontend_port = source_frontend_port() if not app_path and frontend_dev_server() else backend_port
     backend_running = is_port_open(backend_port)
     frontend_running = is_port_open(frontend_port)
     return {

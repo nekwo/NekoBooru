@@ -2033,13 +2033,22 @@ function enabledModels() {
 
 async function loadEnabledAutoTagModels() {
   const pending = enabledModels().filter((model) => model.downloaded && model.runtimeAvailable && !model.loaded)
-  if (pending.length) {
-    setStatus(`Loading model weights: ${pending.map((model) => model.name).join(', ')}...`, 'working')
-  }
+  if (!pending.length) return
+  setStatus(`Loading model weights: ${pending.map((model) => model.name).join(', ')}...`, 'working')
+  await ensureBackendReady()
+  // Queue every load at once. The backend still loads them one after another,
+  // but no longer waits on a poll gap and a full status refresh between each.
   for (const model of pending) {
-    if (!model.downloaded || !model.runtimeAvailable || model.loaded) continue
-    await loadAutoTagModel(model.id, { keepStatus: true })
+    const res = await NekoAuth.authFetch(`${instanceUrl}/api/auto-tags/models/${encodeURIComponent(model.id)}/load`, {
+      method: 'POST',
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${res.status}`)
+    }
   }
+  await pollModelLoad()
+  await loadAutoTagControls()
 }
 
 async function loadAutoTagModel(modelId, options = {}) {
@@ -2098,7 +2107,7 @@ function pollAutoTagPreview(jobId) {
         clearInterval(timer)
         reject(e)
       }
-    }, 1000)
+    }, 500)
   })
 }
 
@@ -2110,12 +2119,15 @@ function pollModelLoad() {
         const res = await NekoAuth.authFetch(`${instanceUrl}/api/auto-tags/models/load-job`)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const job = await res.json()
+        const queued = Array.isArray(job?.queued) ? job.queued.length : 0
         if (job?.message) {
           const progress = Number.isFinite(Number(job.progress)) ? ` (${Math.round(Number(job.progress))}%)` : ''
           const model = job.model ? `${job.model}: ` : ''
-          setStatus(`${model}${job.message}${progress}`, 'working')
+          const waiting = queued ? ` · ${queued} more queued` : ''
+          setStatus(`${model}${job.message}${progress}${waiting}`, 'working')
         }
-        if (!job || !['queued', 'running'].includes(job.status)) {
+        // Done only when the current load has finished and nothing waits behind it.
+        if (!job || (!['queued', 'running'].includes(job.status) && !queued)) {
           clearInterval(modelLoadPollTimer)
           modelLoadPollTimer = null
           if (job?.status === 'failed') {
@@ -2129,7 +2141,7 @@ function pollModelLoad() {
         modelLoadPollTimer = null
         reject(e)
       }
-    }, 700)
+    }, 400)
   })
 }
 

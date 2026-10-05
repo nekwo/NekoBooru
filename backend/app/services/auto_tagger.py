@@ -12,6 +12,7 @@ import math
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -385,6 +386,7 @@ class WdTagger:
         self._loaded = False
         self._session = None
         self._tag_rows: list[tuple[str, int]] = []
+        self._vocab: _TagVocabulary | None = None
         self._providers: list[str] = []
 
     def is_loaded(self) -> bool:
@@ -395,6 +397,7 @@ class WdTagger:
             was_loaded = self._loaded
             self._session = None
             self._tag_rows = []
+            self._vocab = None
             self._providers = []
             self._loaded = False
             gc.collect()
@@ -419,10 +422,21 @@ class WdTagger:
         token = huggingface_token()
         if progress:
             progress("resolve_files", 8, "Resolving cached model files")
-        model_path = hf_hub_download(WD_MODEL_ID, "model.onnx", token=token, cache_dir=_hf_cache_dir())
-        if progress:
-            progress("resolve_tags", 22, "Resolving tag metadata")
-        tags_path = hf_hub_download(WD_MODEL_ID, "selected_tags.csv", token=token, cache_dir=_hf_cache_dir())
+        # The cache first: without local_files_only every load asked
+        # huggingface.co for both files' etags, the bulk of WD's load time.
+        # The network is only used when a file is genuinely missing.
+        try:
+            model_path = hf_hub_download(
+                WD_MODEL_ID, "model.onnx", token=token, cache_dir=_hf_cache_dir(), local_files_only=True
+            )
+            tags_path = hf_hub_download(
+                WD_MODEL_ID, "selected_tags.csv", token=token, cache_dir=_hf_cache_dir(), local_files_only=True
+            )
+        except Exception:  # noqa: BLE001 - not cached yet: download as before
+            model_path = hf_hub_download(WD_MODEL_ID, "model.onnx", token=token, cache_dir=_hf_cache_dir())
+            if progress:
+                progress("resolve_tags", 22, "Resolving tag metadata")
+            tags_path = hf_hub_download(WD_MODEL_ID, "selected_tags.csv", token=token, cache_dir=_hf_cache_dir())
         if progress:
             progress("load_weights", 35, "Loading ONNX weights into memory")
         self._session = _create_onnx_session(ort, model_path)
@@ -434,15 +448,22 @@ class WdTagger:
             for row in csv.DictReader(fh):
                 rows.append((str(row["name"]), int(row["category"])))
         self._tag_rows = rows
+        self._vocab = None
+        self._vocabulary()
+
+    def _vocabulary(self) -> "_TagVocabulary":
+        if self._vocab is None:
+            self._vocab = _TagVocabulary(
+                [name for name, _ in self._tag_rows], [str(category) for _, category in self._tag_rows]
+            )
+        return self._vocab
 
     def tag_image(self, path: Path, opts: AutoTagOptions) -> AutoTagResult:
         self.ensure_loaded()
         import numpy as np  # type: ignore
 
-        with Image.open(path) as image:
-            image = image.convert("RGB")
-            image = _letterbox(image, 448)
-            arr = np.asarray(image, dtype=np.float32)[None, ...]
+        image = _letterbox(_source_rgb(path), 448)
+        arr = np.asarray(image, dtype=np.float32)[None, ...]
 
         input_name = self._session.get_inputs()[0].name
         scores = self._session.run(None, {input_name: arr})[0][0]
@@ -452,10 +473,13 @@ class WdTagger:
         rating: dict[str, float] = {}
         display_names: dict[str, str] = {}
 
-        for (name, category), score in zip(self._tag_rows, scores):
-            confidence = float(score)
-            norm = normalize_tag(name)
-            qualified = qualified_display_name(name)
+        # Category 0 is general, 4 character, 9 rating (every rating is kept).
+        limits = {"0": opts.generalThreshold, "4": opts.characterThreshold, "9": float("-inf")}
+        for idx in self._vocabulary().passing(scores, limits.get):
+            name, category = self._tag_rows[idx]
+            confidence = float(scores[idx])
+            norm = self._vocabulary().tags[idx]
+            qualified = self._vocabulary().qualified[idx]
             if qualified:
                 display_names[norm] = qualified
             if category == 0 and confidence >= opts.generalThreshold:
@@ -501,6 +525,7 @@ class PixAiTagger:
         self._loaded = False
         self._session = None
         self._tag_rows: list[tuple[str, str]] = []
+        self._vocab: _TagVocabulary | None = None
         self._image_size = 448
         self._providers: list[str] = []
 
@@ -512,6 +537,7 @@ class PixAiTagger:
             was_loaded = self._loaded
             self._session = None
             self._tag_rows = []
+            self._vocab = None
             self._providers = []
             self._loaded = False
             gc.collect()
@@ -549,6 +575,13 @@ class PixAiTagger:
         self._tag_rows = _read_pixai_tag_rows(Path(tags_path))
         if not self._tag_rows:
             raise RuntimeError("PixAI tag metadata did not contain any tags")
+        self._vocab = None
+        self._vocabulary()
+
+    def _vocabulary(self) -> "_TagVocabulary":
+        if self._vocab is None:
+            self._vocab = _TagVocabulary([name for name, _ in self._tag_rows], [category for _, category in self._tag_rows])
+        return self._vocab
 
     def tag_image(self, path: Path, opts: AutoTagOptions) -> AutoTagResult:
         self.ensure_loaded()
@@ -567,12 +600,24 @@ class PixAiTagger:
             "rating": [],
         }
         display_names: dict[str, str] = {}
-        for (name, category), score in zip(self._tag_rows, scores):
-            confidence = float(score)
-            tag = normalize_tag(name)
+        character_limit = max(float(opts.characterThreshold), float(MODEL_REGISTRY["pixai"].get("characterThreshold") or 0.85))
+
+        def limit_for(category: str) -> float:
+            if category == "rating":
+                return 0.01
+            if category == "character":
+                return character_limit
+            if category in {"copyright", "artist"}:
+                return opts.characterThreshold
+            return opts.generalThreshold
+
+        for idx in self._vocabulary().passing(scores, limit_for):
+            name, category = self._tag_rows[idx]
+            confidence = float(scores[idx])
+            tag = self._vocabulary().tags[idx]
             if not tag:
                 continue
-            qualified = qualified_display_name(name)
+            qualified = self._vocabulary().qualified[idx]
             if qualified:
                 display_names[tag] = qualified
             if category == "character":
@@ -629,6 +674,7 @@ class CamieTagger:
         self._session = None
         self._idx_to_tag: dict[str, str] = {}
         self._tag_to_category: dict[str, str] = {}
+        self._vocab: _TagVocabulary | None = None
         self._image_size = 512
         self._providers: list[str] = []
 
@@ -641,6 +687,7 @@ class CamieTagger:
             self._session = None
             self._idx_to_tag = {}
             self._tag_to_category = {}
+            self._vocab = None
             self._providers = []
             self._loaded = False
             gc.collect()
@@ -671,8 +718,20 @@ class CamieTagger:
         self._image_size = int(info.get("img_size") or 512)
         self._idx_to_tag = {str(k): str(v) for k, v in (mapping.get("idx_to_tag") or {}).items()}
         self._tag_to_category = {str(k): str(v) for k, v in (mapping.get("tag_to_category") or {}).items()}
+        self._vocab = None
+        self._vocabulary()
         self._session = _create_onnx_session(ort, model_path)
         self._providers = list(self._session.get_providers())
+
+    def _vocabulary(self) -> "_TagVocabulary":
+        if self._vocab is None:
+            size = max((int(key) for key in self._idx_to_tag if key.isdigit()), default=-1) + 1
+            names = [self._idx_to_tag.get(str(idx)) for idx in range(size)]
+            self._vocab = _TagVocabulary(
+                names,
+                [self._tag_to_category.get(name, "general") if name else None for name in names],
+            )
+        return self._vocab
 
     def tag_image(self, path: Path, opts: AutoTagOptions) -> AutoTagResult:
         self.ensure_loaded()
@@ -701,15 +760,15 @@ class CamieTagger:
             "meta": opts.generalThreshold,
             "rating": 0.05,
         }
-        for idx, score in enumerate(probs):
+        for idx in self._vocabulary().passing(probs, lambda category: threshold_by_category.get(category, opts.generalThreshold)):
             tag = self._idx_to_tag.get(str(idx))
             if not tag:
                 continue
             category = self._tag_to_category.get(tag, "general")
-            confidence = float(score)
+            confidence = float(probs[idx])
             if confidence >= threshold_by_category.get(category, opts.generalThreshold):
-                normalized = normalize_tag(tag)
-                qualified = qualified_display_name(tag)
+                normalized = self._vocabulary().tags[idx]
+                qualified = self._vocabulary().qualified[idx]
                 if qualified:
                     display_names[normalized] = qualified
                 by_category.setdefault(category, []).append((normalized, confidence))
@@ -763,6 +822,7 @@ class ClTagger:
         self._input_name = "pixel_values"
         self._idx_to_tag: dict[int, str] = {}
         self._tag_to_category: dict[str, str] = {}
+        self._vocab: _TagVocabulary | None = None
         self._image_size = CL_IMAGE_SIZE
         self._providers: list[str] = []
 
@@ -775,6 +835,7 @@ class ClTagger:
             self._session = None
             self._idx_to_tag = {}
             self._tag_to_category = {}
+            self._vocab = None
             self._providers = []
             self._loaded = False
             gc.collect()
@@ -821,6 +882,14 @@ class ClTagger:
         self._idx_to_tag, self._tag_to_category = _read_cl_vocabulary(Path(vocab_path))
         if not self._idx_to_tag:
             raise RuntimeError("CL Tagger vocabulary did not contain any tags")
+        self._vocab = None
+        self._vocabulary()
+
+    def _vocabulary(self) -> "_TagVocabulary":
+        if self._vocab is None:
+            names = [self._idx_to_tag.get(idx) for idx in range(max(self._idx_to_tag, default=-1) + 1)]
+            self._vocab = _TagVocabulary(names, [self._tag_to_category.get(name) if name else None for name in names])
+        return self._vocab
 
     def tag_image(self, path: Path, opts: AutoTagOptions) -> AutoTagResult:
         self.ensure_loaded()
@@ -841,17 +910,27 @@ class ClTagger:
             "meta": [],
             "rating": [],
         }
-        for idx, score in enumerate(probs):
+        def limit_for(category: str) -> float:
+            if category == "quality":
+                return float("inf")
+            if category == "rating":
+                return 0.01
+            return character_threshold if category in {"character", "copyright"} else general_threshold
+
+        # 108k tags: the numpy pass leaves the per-tag Python work below to the
+        # few dozen that can pass, where it used to cost ~0.4 s per image.
+        for idx in self._vocabulary().passing(probs, limit_for):
+            score = probs[idx]
             raw_tag = self._idx_to_tag.get(idx)
             if not raw_tag:
                 continue
             category = self._tag_to_category.get(raw_tag)
             if category is None or category == "quality":
                 continue
-            tag = normalize_tag(raw_tag)
+            tag = self._vocabulary().tags[idx]
             if not tag:
                 continue
-            qualified = qualified_display_name(raw_tag)
+            qualified = self._vocabulary().qualified[idx]
             if qualified:
                 display_names[tag] = qualified
             confidence = float(score)
@@ -2234,17 +2313,25 @@ def _remote_worker_status(opts: AutoTagOptions) -> dict:
     return info
 
 
+# Whether transformers' pipeline imported, once something has needed it.
+_TRANSFORMERS_PIPELINE_OK: bool | None = None
+
+
 def _transformers_pipeline():
+    global _TRANSFORMERS_PIPELINE_OK
     try:
         from transformers.pipelines import pipeline as hf_pipeline  # type: ignore
 
+        _TRANSFORMERS_PIPELINE_OK = True
         return hf_pipeline
     except Exception as direct_exc:  # noqa: BLE001
         try:
             from transformers import pipeline as hf_pipeline  # type: ignore
 
+            _TRANSFORMERS_PIPELINE_OK = True
             return hf_pipeline
         except Exception as lazy_exc:  # noqa: BLE001
+            _TRANSFORMERS_PIPELINE_OK = False
             raise ImportError(
                 "transformers pipeline is unavailable. Reinstall the AI runtime so transformers, torch, "
                 f"torchvision, and torchaudio are compatible. direct import: {direct_exc}; lazy import: {lazy_exc}"
@@ -2252,11 +2339,18 @@ def _transformers_pipeline():
 
 
 def _transformers_pipeline_available() -> bool:
-    try:
-        _transformers_pipeline()
+    """Whether Whisper's transformers pipeline should work.
+
+    Importing transformers.pipelines takes ~3 s and drags torch in, which made
+    the first status call after every start slow. The real answer is recorded
+    once a Whisper load imports it; until then, the packages being installed
+    is the answer, and a broken install still surfaces as that load's error.
+    """
+    if _TRANSFORMERS_PIPELINE_OK is not None:
+        return _TRANSFORMERS_PIPELINE_OK
+    if "transformers.pipelines" in sys.modules:
         return True
-    except Exception:
-        return False
+    return find_spec("transformers") is not None and find_spec("torch") is not None
 
 
 def status() -> dict:
@@ -2768,7 +2862,17 @@ def runtime_available(model_id: str) -> bool:
     return False
 
 
+_LLAMA_CPP_PREPARED = False
+_LLAMA_CPP_IMPORTABLE = False
+
+
 def _prepare_llama_cpp_runtime() -> None:
+    # Once per process: this walks site-packages/nvidia and registers DLL
+    # directories, and status polls used to repeat it (and leak the handles).
+    global _LLAMA_CPP_PREPARED
+    if _LLAMA_CPP_PREPARED:
+        return
+    _LLAMA_CPP_PREPARED = True
     if os.name != "nt":
         return
     candidates: list[Path] = []
@@ -2814,11 +2918,15 @@ def _prepare_llama_cpp_runtime() -> None:
 
 
 def _llama_cpp_importable() -> bool:
+    global _LLAMA_CPP_IMPORTABLE
+    if _LLAMA_CPP_IMPORTABLE:
+        return True
     if find_spec("llama_cpp") is None:
         return False
     try:
         _prepare_llama_cpp_runtime()
         importlib.import_module("llama_cpp")
+        _LLAMA_CPP_IMPORTABLE = True
         return True
     except Exception as exc:  # noqa: BLE001
         logger.debug("llama_cpp is installed but not importable yet: %s", exc)
@@ -3851,13 +3959,90 @@ def _onnx_input_image_size(session, default: int = 448) -> int:
     return int(max(ints))
 
 
+class _TagVocabulary:
+    """A tagger's vocabulary, prepared once at load time.
+
+    ``tags`` and ``qualified`` hold normalize_tag() / qualified_display_name()
+    per index, and ``passing()`` thresholds a whole score vector in numpy. The
+    taggers used to run both regexes for every one of 10k-108k tags on every
+    image before looking at the score; now that work happens once, and only
+    the few tags that clear their threshold reach Python at all.
+    """
+
+    def __init__(self, names: list[str | None], categories: list[str | None]) -> None:
+        import numpy as np  # type: ignore
+
+        self.tags = [normalize_tag(name) if name else "" for name in names]
+        self.qualified = [qualified_display_name(name) if name else None for name in names]
+        self.category_names = sorted({category for category in categories if category is not None})
+        code_for = {category: code for code, category in enumerate(self.category_names)}
+        # -1 marks an index with no tag or no category; it never passes.
+        self.codes = np.asarray(
+            [code_for[category] if name and category is not None else -1 for name, category in zip(names, categories)],
+            dtype=np.int32,
+        )
+
+    def passing(self, scores, limit_for) -> list[int]:
+        """Indexes whose score reaches ``limit_for(category)``; a None limit never passes."""
+        import numpy as np  # type: ignore
+
+        scores = np.asarray(scores, dtype=np.float64).reshape(-1)
+        count = min(len(scores), len(self.codes))
+        lookup = np.full(len(self.category_names) + 1, np.inf, dtype=np.float64)
+        for code, category in enumerate(self.category_names):
+            limit = limit_for(category)
+            if limit is not None:
+                lookup[code] = float(limit)
+        # Code -1 indexes the trailing inf.
+        limits = lookup[self.codes[:count]]
+        return np.nonzero(scores[:count] >= limits)[0].tolist()
+
+
+# Every tagger input is 512 px or smaller. Decoding the full original for each
+# model cost over a second per model on 30-70 megapixel files, so the source
+# is decoded once per file, already shrunk, and shared by every model that
+# tags the same image. The short side never drops below TAGGER_SOURCE_MIN_SIDE:
+# models that squash to a square (CL) would otherwise have to stretch a
+# panorama's few remaining rows back up.
+TAGGER_SOURCE_MAX_SIDE = 2048
+TAGGER_SOURCE_MIN_SIDE = 1024
+_source_image_lock = threading.Lock()
+_source_image_cache: tuple[tuple, "Image.Image"] | None = None
+
+
+def _source_rgb(path: Path):
+    """The image at ``path`` as RGB, shrunk toward TAGGER_SOURCE_MAX_SIDE on its long side."""
+    global _source_image_cache
+    try:
+        stat = Path(path).stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        key = None
+    with _source_image_lock:
+        if key is not None and _source_image_cache is not None and _source_image_cache[0] == key:
+            return _source_image_cache[1]
+
+    with Image.open(path) as image:
+        # JPEG decodes straight to a 1/2, 1/4 or 1/8 scale that still covers
+        # the target; other formats ignore this.
+        image.draft("RGB", (TAGGER_SOURCE_MIN_SIDE, TAGGER_SOURCE_MIN_SIDE))
+        image = image.convert("RGB")
+    factor = min(math.ceil(max(image.size) / TAGGER_SOURCE_MAX_SIDE), min(image.size) // TAGGER_SOURCE_MIN_SIDE)
+    if factor > 1:
+        # Box-filter reduction: fast, and it averages rather than aliases.
+        image = image.reduce(factor)
+
+    if key is not None:
+        with _source_image_lock:
+            _source_image_cache = (key, image)
+    return image
+
+
 def _generic_onnx_image_tensor(path: Path, image_size: int, shape):
     import numpy as np  # type: ignore
 
-    with Image.open(path) as image:
-        image = image.convert("RGB")
-        image = _letterbox(image, image_size)
-        arr = np.asarray(image, dtype=np.float32)
+    image = _letterbox(_source_rgb(path), image_size)
+    arr = np.asarray(image, dtype=np.float32)
 
     shape_list = list(shape or [])
     if len(shape_list) >= 4 and shape_list[1] == 3:
@@ -3945,15 +4130,14 @@ def _normalize_tagger_category(value) -> str:
 def _imagenet_tensor(path: Path, image_size: int):
     import numpy as np  # type: ignore
 
-    with Image.open(path) as img:
-        img = img.convert("RGB")
-        width, height = img.size
-        scale = min(image_size / width, image_size / height)
-        new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-        resized = img.resize(new_size, Image.LANCZOS)
-        canvas = Image.new("RGB", (image_size, image_size), (124, 116, 104))
-        canvas.paste(resized, ((image_size - new_size[0]) // 2, (image_size - new_size[1]) // 2))
-        arr = np.asarray(canvas, dtype=np.float32) / 255.0
+    img = _source_rgb(path)
+    width, height = img.size
+    scale = min(image_size / width, image_size / height)
+    new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+    resized = img.resize(new_size, Image.LANCZOS)
+    canvas = Image.new("RGB", (image_size, image_size), (124, 116, 104))
+    canvas.paste(resized, ((image_size - new_size[0]) // 2, (image_size - new_size[1]) // 2))
+    arr = np.asarray(canvas, dtype=np.float32) / 255.0
     mean = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
     arr = (arr - mean) / std
@@ -3964,10 +4148,8 @@ def _siglip_tensor(path: Path, image_size: int):
     """SigLIP2 preprocessing: square resize, scale to [0,1], normalize mean=std=0.5."""
     import numpy as np  # type: ignore
 
-    with Image.open(path) as img:
-        img = img.convert("RGB")
-        resized = img.resize((image_size, image_size), Image.BICUBIC)
-        arr = np.asarray(resized, dtype=np.float32) / 255.0
+    resized = _source_rgb(path).resize((image_size, image_size), Image.BICUBIC)
+    arr = np.asarray(resized, dtype=np.float32) / 255.0
     arr = (arr - 0.5) / 0.5
     return np.transpose(arr, (2, 0, 1))[None, ...].astype(np.float32)
 

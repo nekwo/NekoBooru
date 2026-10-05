@@ -20,14 +20,26 @@ def _subprocess_options(**kwargs) -> dict:
     return options
 
 
+_FFMPEG_FOUND = False
+
+
 def check_ffmpeg_available() -> bool:
-    """Check if ffmpeg is available in the system PATH."""
+    """Check if ffmpeg is available in the system PATH.
+
+    A found ffmpeg is remembered: status pages poll this, and spawning
+    ``ffmpeg -version`` each time adds up. A miss is re-checked, so installing
+    ffmpeg is noticed without a restart.
+    """
+    global _FFMPEG_FOUND
+    if _FFMPEG_FOUND:
+        return True
     try:
         result = subprocess.run(
             ["ffmpeg", "-version"],
             **_subprocess_options(capture_output=True, timeout=5),
         )
-        return result.returncode == 0
+        _FFMPEG_FOUND = result.returncode == 0
+        return _FFMPEG_FOUND
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
