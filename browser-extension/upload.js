@@ -2273,9 +2273,20 @@ async function uploadMediaUrlFromBrowser(url, typeHint = '', options = {}) {
   return data.token
 }
 
+// Why the captured-media path gave up, for the error the user actually sees.
+// "No usable media was found" reads the same whether nothing was ever
+// captured, the wanted attachment is not among what was, or its bytes would
+// not fetch — three different faults needing three different fixes.
+let capturedXMediaNote = ''
+
 async function uploadCapturedXMedia() {
   const candidates = await capturedXMediaCandidates()
-  if (!candidates.length) return ''
+  if (!candidates.length) {
+    capturedXMediaNote = xTweetId
+      ? `No X media was captured for tweet ${xTweetId}: the page's own API response never reached the extension.`
+      : 'This page carries no tweet ID, so there is no captured X media to look in.'
+    return ''
+  }
   const previewUrl = canonicalMediaUrl(srcUrl)
   const exactCandidate = previewUrl
     ? candidates.find((item) => canonicalMediaUrl(item.url) === previewUrl)
@@ -2291,12 +2302,17 @@ async function uploadCapturedXMedia() {
     const wanted = exactCandidate
       || candidates.find((item) => item.index === xMediaIndex)
       || candidates[xMediaIndex]
-    if (!wanted?.url) return ''
+    if (!wanted?.url) {
+      capturedXMediaNote = `Captured X media holds ${candidates.length} attachment(s) for this tweet, but none at position ${xMediaIndex + 1}.`
+      return ''
+    }
     try {
       setStatus('Using selected X media...', 'working')
       return await uploadMediaUrl(wanted.url, wanted.type === 'video' ? 'video/mp4' : 'image/jpeg', { browserFirst: true })
     } catch (error) {
-      setStatus(`Captured X media failed, trying yt-dlp fallback: ${error?.message || String(error)}`, 'working')
+      const reason = error?.message || String(error)
+      capturedXMediaNote = `The captured attachment ${wanted.url} could not be fetched: ${reason}.`
+      setStatus(`Captured X media failed, trying yt-dlp fallback: ${reason}`, 'working')
       return ''
     }
   }
@@ -2332,7 +2348,10 @@ async function uploadCapturedXMedia() {
       lastError = error?.message || String(error)
     }
   }
-  if (lastError) setStatus(`Captured X media failed, trying yt-dlp fallback: ${lastError}`, 'working')
+  if (lastError) {
+    capturedXMediaNote = `All ${candidates.length} captured attachment(s) failed to fetch, last error: ${lastError}.`
+    setStatus(`Captured X media failed, trying yt-dlp fallback: ${lastError}`, 'working')
+  }
   return ''
 }
 
@@ -2420,9 +2439,7 @@ async function getContentToken() {
     }
 
     if (fetchMode === 'link') {
-      const cacheNote = xTweetId
-        ? ' Captured X media cache was checked before and after yt-dlp, but no usable media was found.'
-        : ''
+      const cacheNote = capturedXMediaNote ? ` ${capturedXMediaNote}` : ''
       throw new Error(`yt-dlp could not download this video page: ${ytdlpError || 'no token returned'}.${cacheNote}`)
     }
   }

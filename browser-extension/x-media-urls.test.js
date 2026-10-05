@@ -191,6 +191,40 @@ async function main() {
     assert.equal(cursor.tweetIdFromUrl(url), background.tweetIdFromUrl(url), url)
   }
 
+  // --- which X responses get captured --------------------------------------
+  // The matcher lives inside an IIFE, so read the literal out of the source.
+  const captureSource = fs.readFileSync(path.join(__dirname, 'x-media-capture.js'), 'utf8')
+  const literal = captureSource.match(/const CAPTURE_ENDPOINT = (\/.*\/)\n/)?.[1]
+  assert.ok(literal, 'CAPTURE_ENDPOINT literal not found')
+  const capture = new RegExp(literal.slice(1, -1))
+
+  for (const captured of [
+    '/i/api/graphql/aBc123/TweetDetail',
+    '/graphql/aBc123/TweetDetail',
+    // The old allow-list named fourteen operations; these are the kind of
+    // rename or addition that used to fall through silently.
+    '/i/api/graphql/aBc123/TweetDetailWithVisibilityResults',
+    '/i/api/graphql/aBc123/NotificationsTimeline',
+    '/i/api/graphql/aBc123/ConversationTimeline',
+    // Direct messages come over REST, not GraphQL, so they never matched.
+    '/i/api/1.1/dm/conversation/1569552145-2468.json',
+    '/i/api/1.1/dm/inbox_initial_state.json',
+    '/i/api/1.1/dm/user_updates.json',
+    '/1.1/dm/conversation/1569552145-2468.json',
+  ]) {
+    assert.equal(capture.test(captured), true, captured)
+  }
+
+  for (const ignored of [
+    '/i/api/1.1/jot/client_event.json',
+    '/i/api/2/notifications/all.json',
+    '/i/api/graphql/aBc123/TweetDetail/extra',
+    '/home',
+    '/BlueWaifu/status/2095853665160425960/photo/2',
+  ]) {
+    assert.equal(capture.test(ignored), false, ignored)
+  }
+
   console.log('x-media-urls: all assertions passed')
 }
 

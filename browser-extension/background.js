@@ -828,11 +828,11 @@ async function handleContextMenuClick(info, tab) {
   const linkedPageUrl = info.linkUrl && isVideoPlatformUrl(info.linkUrl) ? info.linkUrl : ''
   const sourcePageUrl = withXMediaIndexPath(linkedPageUrl || pageUrl, pageUrl)
 
-  // yt-dlp always returns a tweet's *first* video, whatever /photo/<n> or
-  // /video/<n> the URL names — and X numbers animated GIFs as /photo/<n> too,
-  // so "the second photo" is routinely a GIF that yt-dlp answers with the
-  // first one. Whenever the click names a single attachment, take that one and
-  // skip yt-dlp entirely.
+  // X numbers animated GIFs /photo/<n> just like stills, so "the second photo"
+  // is routinely a GIF served as an mp4. yt-dlp does honour that index, but
+  // only if it survives the trip, and the tweet URL resolved off the page is
+  // always the bare /status/<id>. Settling the attachment here keeps it exact
+  // and skips the round trip.
   const xAttachment = onVideoSite
     ? xAttachmentFromClick(info, overVideo) || await capturedXAttachment(sourcePageUrl)
     : null
