@@ -19,6 +19,7 @@ def _tag_detail(tag) -> dict:
         # Source spelling when the tagger supplied one ("miyu (blue archive)"),
         # otherwise the flattened name made readable.
         "displayName": tag.display_name or tag.name.replace("_", " "),
+        "sankakuName": tag.sankaku_name,
         "category": category.name if category else "general",
         "categoryColor": category.color if category else "#808080",
         "usageCount": tag.usage_count or 0,

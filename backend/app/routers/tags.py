@@ -10,6 +10,7 @@ from ..database import get_db
 from ..dependencies import get_current_user
 from ..models import Tag, TagCategory, TagImplication, TagAlias, User
 from ..services.auth import visible_owner_ids
+from ..services.tagging import TagAliasConflict, alias_tag, tag_spelling
 
 router = APIRouter(prefix="/api", tags=["tags"])
 
@@ -82,6 +83,8 @@ class CreateImplicationRequest(BaseModel):
 class CreateAliasRequest(BaseModel):
     alias: str  # Alias name
     target: str  # Canonical tag name
+    # Set by Sankaku imports: the alias is Sankaku's own spelling of the target.
+    sankakuName: Optional[str] = None
 
 
 @router.get("/tags")
@@ -151,6 +154,7 @@ async def autocomplete_tags(
     limit: int = Query(10, ge=1, le=50),
     name_parts: bool = Query(False, alias="nameParts"),
     include_remote: bool = Query(False, alias="includeRemote"),
+    force_remote: bool = Query(False, alias="forceRemote"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -159,7 +163,9 @@ async def autocomplete_tags(
     With ``includeRemote`` the local matches are topped up with suggestions from
     public boorus for tags this library does not have yet - the case local
     autocomplete cannot help with at all. Remote rows carry ``remote: true`` and
-    the source board's own category, and only appear when the setting is on.
+    the source board's own category, and only appear when the setting is on -
+    or with ``forceRemote``, for a field whose whole purpose is finding the
+    booru's name for a tag (the Tags page's "Alias of...").
     """
     match_condition, rank = _tag_name_autocomplete_condition(q, name_parts=name_parts)
     if match_condition is None:
@@ -182,7 +188,7 @@ async def autocomplete_tags(
 
     from ..services.auto_tagger import load_options
 
-    if not getattr(load_options(), "booruSuggestEnabled", False):
+    if not force_remote and not getattr(load_options(), "booruSuggestEnabled", False):
         return rows
 
     from ..services.booru_suggest import suggest_tags
@@ -260,6 +266,42 @@ async def create_tag(
     await db.refresh(tag, ["category"])
 
     return tag.to_dict()
+
+
+@router.post("/tags/{tag_name}/sankaku-name")
+async def resolve_sankaku_name(
+    tag_name: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+):
+    """The name to search Sankaku for, looked up the first time it is needed.
+
+    Sankaku spells some qualified tags in full (honoka_(dead_or_alive) for
+    honoka_(doa)). A found name is stored on the tag, so each tag is looked up
+    at most once; when nothing better is found, or the lookup fails, the
+    tag's own booru spelling is returned and nothing is stored.
+    """
+    import httpx
+    from ..services.site_imports import SourceThrottled, lookup_sankaku_name
+
+    owner_ids = await visible_owner_ids(db, current_user)
+    result = await db.execute(select(Tag).where(Tag.name == tag_name, Tag.owner_id.in_(owner_ids)))
+    tag = result.scalars().first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.sankaku_name:
+        return {"sankakuName": tag.sankaku_name, "found": True}
+
+    spelling = tag_spelling(tag)
+    try:
+        found = await lookup_sankaku_name(spelling)
+    except (SourceThrottled, httpx.HTTPError, ValueError):
+        return {"sankakuName": spelling, "found": False}
+    if not found:
+        return {"sankakuName": spelling, "found": False}
+    # Only the owner's library is written; a shared viewer just gets the answer.
+    if tag.owner_id == current_user.id:
+        tag.sankaku_name = found
+        await db.commit()
+    return {"sankakuName": found, "found": True}
 
 
 @router.put("/tags/{tag_name}")
@@ -443,37 +485,24 @@ async def list_aliases(
 async def create_alias(
     request: CreateAliasRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    """Create a tag alias pointing at one of this user's own tags."""
-    alias_name = request.alias.lower().replace(" ", "_")
+    """Create a tag alias pointing at one of this user's own tags.
 
-    # Check if alias already exists
-    existing = await db.execute(
-        select(TagAlias).where(TagAlias.alias_name == alias_name, TagAlias.owner_id == current_user.id)
-    )
-    if existing.scalars().first():
-        raise HTTPException(status_code=409, detail="Alias already exists")
+    An alias name that is already a tag is merged into the target: its posts
+    move over and the old tag is removed. A target that does not exist yet
+    takes over the alias tag by renaming it.
+    """
+    try:
+        result = await alias_tag(
+            db, current_user.id, request.alias, request.target, sankaku_name=request.sankakuName
+        )
+    except TagAliasConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Check if alias name is already a real tag
-    existing_tag = await db.execute(
-        select(Tag).where(Tag.name == alias_name, Tag.owner_id == current_user.id)
-    )
-    if existing_tag.scalars().first():
-        raise HTTPException(status_code=409, detail="Alias name is already a tag")
-
-    # Get target tag
-    target_result = await db.execute(
-        select(Tag).where(Tag.name == request.target.lower(), Tag.owner_id == current_user.id)
-    )
-    target = target_result.scalars().first()
-    if not target:
-        raise HTTPException(status_code=404, detail=f"Target tag not found: {request.target}")
-
-    alias = TagAlias(owner_id=current_user.id, alias_name=alias_name, target_id=target.id)
-    db.add(alias)
-    await db.commit()
-    await db.refresh(alias, ["target"])
-
-    return alias.to_dict()
+    return {**result.alias.to_dict(), "mergedPosts": result.merged_posts, "renamed": result.renamed}
 
 
 @router.delete("/tag-aliases/{alias_id}")

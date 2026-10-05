@@ -46,6 +46,11 @@ class Tag(Base):
     # that arrived without one (hand-typed, older rows), and the UI falls back
     # to swapping underscores for spaces.
     display_name = Column(String(255), nullable=True)
+    # What Sankaku calls this tag when it spells it differently - Sankaku writes
+    # honoka_(dead_or_alive) where the stored, Danbooru-spelled tag is
+    # honoka_doa. Only Sankaku searches use it; null means the booru spelling
+    # works there too.
+    sankaku_name = Column(String(255), nullable=True)
     category_id = Column(Integer, ForeignKey("tag_categories.id"), default=1)
     usage_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -71,6 +76,7 @@ class Tag(Base):
             "id": self.id,
             "name": self.name,
             "displayName": self.display_name or self.name.replace("_", " "),
+            "sankakuName": self.sankaku_name,
             "category": self.category.name if self.category else "general",
             "categoryColor": self.category.color if self.category else "#808080",
             "usageCount": self.usage_count,

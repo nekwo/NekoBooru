@@ -420,6 +420,9 @@ export const api = {
     // Tags this library does not have yet, from public boorus. The server
     // ignores it unless booru suggestions are enabled in settings.
     if (options.includeRemote) params.set('includeRemote', 'true')
+    // Ask the boorus even with that setting off, for a field whose purpose is
+    // finding the booru's name for a tag.
+    if (options.forceRemote) params.set('forceRemote', 'true')
     return request(`/tags/autocomplete?${params.toString()}`)
   },
 
@@ -439,6 +442,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     })
+  },
+
+  // Sankaku's name for a tag, looked up on the backend the first time it is needed.
+  async resolveSankakuName(name) {
+    return request(`/tags/${encodeURIComponent(name)}/sankaku-name`, { method: 'POST' })
   },
 
   async deleteTag(name) {

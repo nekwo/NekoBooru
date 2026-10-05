@@ -36,11 +36,11 @@ describe('TagSearchMenu', () => {
     await trigger.trigger('click')
 
     expect(trigger.attributes('aria-expanded')).toBe('true')
-    expect(document.body.querySelectorAll('[role="menuitem"]')).toHaveLength(3)
+    expect(document.body.querySelectorAll('[role="menuitem"]')).toHaveLength(5)
     expect(document.body.querySelector('[data-path="/"]')?.getAttribute('data-query')).toBe('miyu_(blue_archive)')
   })
 
-  it('opens Gelbooru and Safebooru searches in new tabs', async () => {
+  it('opens Gelbooru, Safebooru, and both Sankaku searches in new tabs', async () => {
     const wrapper = mountMenu('blue hair')
     await wrapper.get('.tag-search-trigger').trigger('click')
     const external = [...document.body.querySelectorAll('a[target="_blank"]')]
@@ -48,8 +48,40 @@ describe('TagSearchMenu', () => {
     expect(external.map((link) => link.href)).toEqual([
       'https://gelbooru.com/index.php?page=post&s=list&tags=blue%20hair',
       'https://safebooru.org/index.php?page=post&s=list&tags=blue%20hair',
+      'https://chan.sankakucomplex.com/?tags=blue%20hair',
+      'https://sankaku.app/?tags=blue%20hair',
     ])
     expect(external.every((link) => link.rel === 'noopener noreferrer')).toBe(true)
+  })
+
+  it('searches the boorus with the display name spelling the stored name lost', async () => {
+    activeWrapper = mount(TagSearchMenu, {
+      attachTo: document.body,
+      props: { tag: 'seitokai_ni_mo_ana_wa_aru', displayName: 'seitokai ni mo ana wa aru!' },
+      global: { stubs: { RouterLink: RouterLinkStub } },
+    })
+    await activeWrapper.get('.tag-search-trigger').trigger('click')
+    const external = [...document.body.querySelectorAll('a[target="_blank"]')]
+
+    expect(external[0].href).toBe('https://gelbooru.com/index.php?page=post&s=list&tags=seitokai_ni_mo_ana_wa_aru!')
+    expect(document.body.querySelector('[data-path="/"]')?.getAttribute('data-query')).toBe('seitokai_ni_mo_ana_wa_aru')
+  })
+
+  it("searches Sankaku under its own name while the other boorus keep theirs", async () => {
+    activeWrapper = mount(TagSearchMenu, {
+      attachTo: document.body,
+      props: { tag: 'honoka_doa', displayName: 'honoka (doa)', sankakuName: 'honoka_(dead_or_alive)' },
+      global: { stubs: { RouterLink: RouterLinkStub } },
+    })
+    await activeWrapper.get('.tag-search-trigger').trigger('click')
+    const external = [...document.body.querySelectorAll('a[target="_blank"]')].map((link) => link.href)
+
+    expect(external).toEqual([
+      'https://gelbooru.com/index.php?page=post&s=list&tags=honoka_(doa)',
+      'https://safebooru.org/index.php?page=post&s=list&tags=honoka_(doa)',
+      'https://chan.sankakucomplex.com/?tags=honoka_(dead_or_alive)',
+      'https://sankaku.app/?tags=honoka_(dead_or_alive)',
+    ])
   })
 
   it('keeps the active dark theme when the menu is teleported', async () => {

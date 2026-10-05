@@ -54,6 +54,26 @@
         >
           Search on Safebooru <span aria-hidden="true">&#8599;</span>
         </a>
+        <a
+          class="tag-search-option"
+          role="menuitem"
+          :href="sankakuChanUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          @click="searchSankaku($event, SANKAKU_CHAN)"
+        >
+          Search on Sankaku Channel <span aria-hidden="true">&#8599;</span>
+        </a>
+        <a
+          class="tag-search-option"
+          role="menuitem"
+          :href="sankakuAppUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          @click="searchSankaku($event, SANKAKU_APP)"
+        >
+          Search on Sankaku App <span aria-hidden="true">&#8599;</span>
+        </a>
       </div>
     </Teleport>
   </span>
@@ -61,6 +81,8 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { SANKAKU_APP, SANKAKU_CHAN, booruSearchTag, sankakuSearchUrl } from '../utils/booruSearchTag.js'
+import { openSankakuSearch } from '../utils/sankakuSearch.js'
 
 const props = defineProps({
   tag: {
@@ -68,6 +90,18 @@ const props = defineProps({
     required: true,
   },
   label: {
+    type: String,
+    default: '',
+  },
+  // The tag's original spelling, which the external boorus need: the stored
+  // name has punctuation like "!" and "()" flattened out.
+  displayName: {
+    type: String,
+    default: '',
+  },
+  // Sankaku's own spelling when it differs (honoka_(dead_or_alive) for the
+  // Danbooru-spelled honoka_doa); only the Sankaku searches use it.
+  sankakuName: {
     type: String,
     default: '',
   },
@@ -97,11 +131,27 @@ const menuStyle = computed(() => ({
   top: `${position.value.top}px`,
   left: `${position.value.left}px`,
 }))
-const gelbooruUrl = computed(() => booruSearchUrl('https://gelbooru.com', props.tag))
-const safebooruUrl = computed(() => booruSearchUrl('https://safebooru.org', props.tag))
+const externalTag = computed(() => booruSearchTag(props.tag, props.displayName))
+const gelbooruUrl = computed(() => booruSearchUrl('https://gelbooru.com', externalTag.value))
+const safebooruUrl = computed(() => booruSearchUrl('https://safebooru.org', externalTag.value))
+// Filled in by a lookup on first use, so later clicks link straight to it.
+const resolvedSankakuName = ref('')
+const sankakuTag = computed(() => props.sankakuName || resolvedSankakuName.value || externalTag.value)
+const sankakuChanUrl = computed(() => sankakuSearchUrl(sankakuTag.value, SANKAKU_CHAN))
+const sankakuAppUrl = computed(() => sankakuSearchUrl(sankakuTag.value, SANKAKU_APP))
 
 function booruSearchUrl(origin, tag) {
   return `${origin}/index.php?page=post&s=list&tags=${encodeURIComponent(tag)}`
+}
+
+async function searchSankaku(event, origin) {
+  closeMenu()
+  const name = await openSankakuSearch(event, {
+    name: props.tag,
+    displayName: props.displayName,
+    sankakuName: props.sankakuName || resolvedSankakuName.value,
+  }, origin)
+  if (name) resolvedSankakuName.value = name
 }
 
 function updatePosition() {

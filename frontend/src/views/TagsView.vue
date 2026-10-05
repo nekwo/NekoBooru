@@ -10,6 +10,8 @@
       />
     </div>
 
+    <p v-if="notice" class="tags-notice">{{ notice }}</p>
+
     <div class="tags-table-container">
       <table class="tags-table">
         <thead>
@@ -27,7 +29,13 @@
         <tbody>
           <tr v-for="tag in tags" :key="tag.id">
             <td>
-              <TagSearchMenu :tag="tag.name" :label="tag.name" trigger-class="tag-link" />
+              <TagSearchMenu
+                :tag="tag.name"
+                :label="tag.name"
+                :display-name="tag.displayName"
+                :sankaku-name="tag.sankakuName || ''"
+                trigger-class="tag-link"
+              />
             </td>
             <td>
               <select
@@ -42,10 +50,42 @@
               </select>
             </td>
             <td>{{ tag.usageCount }}</td>
-            <td>
-              <button class="btn btn-secondary btn-sm" @click="deleteTag(tag)">
-                Delete
-              </button>
+            <td class="tag-actions">
+              <form v-if="aliasingTagId === tag.id" class="alias-row-form" @submit.prevent="aliasRowTag(tag)">
+                <TagNameInput
+                  ref="aliasTargetInput"
+                  v-model="aliasTarget"
+                  :exclude="tag.name"
+                  placeholder="Canonical tag, e.g. honoka_(doa)"
+                  @keydown.esc="cancelAliasing"
+                />
+                <button class="btn btn-sm" type="submit" :disabled="!aliasTarget.trim() || aliasSaving">
+                  {{ aliasSaving ? 'Merging...' : 'Merge' }}
+                </button>
+                <button class="btn btn-secondary btn-sm" type="button" @click="cancelAliasing">Cancel</button>
+              </form>
+              <template v-else>
+                <button
+                  class="btn btn-secondary btn-sm"
+                  title="Merge this tag's posts into another tag and keep this name as an alias of it"
+                  @click="startAliasing(tag)"
+                >
+                  Alias of&hellip;
+                </button>
+                <a
+                  class="btn btn-secondary btn-sm"
+                  :href="sankakuTagUrl(tag)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Search Sankaku Channel for this tag"
+                  @click="searchSankaku($event, tag)"
+                >
+                  Open in Sankaku
+                </a>
+                <button class="btn btn-secondary btn-sm" @click="deleteTag(tag)">
+                  Delete
+                </button>
+              </template>
             </td>
           </tr>
         </tbody>
@@ -77,12 +117,15 @@
 
     <div class="aliases-section">
       <h2>Tag Aliases</h2>
-      <p class="hint">Aliases redirect to canonical tags</p>
+      <p class="hint">
+        Aliases redirect to canonical tags. Aliasing a tag that already exists merges its posts into the
+        canonical one; a canonical tag that does not exist yet is created by renaming it.
+      </p>
 
       <div class="add-form">
         <input v-model="newAlias.alias" placeholder="Alias" />
         <span>points to</span>
-        <input v-model="newAlias.target" placeholder="Canonical tag" />
+        <TagNameInput v-model="newAlias.target" placeholder="Canonical tag" />
         <button class="btn" @click="addAlias">Add</button>
       </div>
 
@@ -99,11 +142,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api/client'
 import Pagination from '../components/Pagination.vue'
+import TagNameInput from '../components/TagNameInput.vue'
 import TagSearchMenu from '../components/TagSearchMenu.vue'
+import { sankakuFallbackUrl, openSankakuSearch } from '../utils/sankakuSearch.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -124,6 +169,13 @@ const newImplication = ref({ antecedent: '', consequent: '' })
 
 const aliases = ref([])
 const newAlias = ref({ alias: '', target: '' })
+
+// The row whose "Alias of..." form is open, and what was typed into it.
+const aliasingTagId = ref(null)
+const aliasTarget = ref('')
+const aliasTargetInput = ref(null)
+const aliasSaving = ref(false)
+const notice = ref('')
 
 const pages = computed(() => Math.ceil(total.value / limit))
 
@@ -262,8 +314,65 @@ async function addAlias() {
     const alias = await api.createAlias(newAlias.value)
     aliases.value.push(alias)
     newAlias.value = { alias: '', target: '' }
+    showAliasNotice(alias)
+    // Aliasing an existing tag merges it away; the list has to catch up.
+    await fetchTags()
   } catch (e) {
     alert('Failed to add alias: ' + e.message)
+  }
+}
+
+// Sankaku's own name when it spells the tag differently (honoka_doa is
+// honoka_(dead_or_alive) there), else the booru spelling the display name
+// still carries - Sankaku needs the parentheses the stored name lost. A tag
+// without a Sankaku name is looked up when clicked.
+function sankakuTagUrl(tag) {
+  return sankakuFallbackUrl(tag)
+}
+
+async function searchSankaku(event, tag) {
+  const name = await openSankakuSearch(event, tag)
+  if (name && !tag.sankakuName) tag.sankakuName = name
+}
+
+async function startAliasing(tag) {
+  aliasingTagId.value = tag.id
+  aliasTarget.value = ''
+  await nextTick()
+  const input = Array.isArray(aliasTargetInput.value) ? aliasTargetInput.value[0] : aliasTargetInput.value
+  input?.focus()
+}
+
+function cancelAliasing() {
+  aliasingTagId.value = null
+  aliasTarget.value = ''
+}
+
+async function aliasRowTag(tag) {
+  const target = aliasTarget.value.trim()
+  if (!target || aliasSaving.value) return
+  aliasSaving.value = true
+  try {
+    const alias = await api.createAlias({ alias: tag.name, target })
+    aliases.value.push(alias)
+    cancelAliasing()
+    showAliasNotice(alias)
+    await fetchTags()
+  } catch (e) {
+    alert('Failed to alias tag: ' + e.message)
+  } finally {
+    aliasSaving.value = false
+  }
+}
+
+function showAliasNotice(alias) {
+  if (alias.renamed) {
+    notice.value = `Renamed ${alias.aliasName} to ${alias.targetName}; the old name is now an alias.`
+  } else if (alias.mergedPosts) {
+    const posts = `${alias.mergedPosts} post${alias.mergedPosts === 1 ? '' : 's'}`
+    notice.value = `Merged ${posts} from ${alias.aliasName} into ${alias.targetName}; the old name is now an alias.`
+  } else {
+    notice.value = `${alias.aliasName} is now an alias of ${alias.targetName}.`
   }
 }
 
@@ -328,6 +437,32 @@ async function deleteAlias(id) {
   font-weight: 500;
 }
 
+.tags-notice {
+  margin-bottom: 1rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.375rem;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.tag-actions {
+  white-space: nowrap;
+}
+
+.tag-actions > .btn + .btn {
+  margin-left: 0.4rem;
+}
+
+.alias-row-form {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.alias-row-form :deep(.tag-name-input) {
+  width: 240px;
+}
+
 .category-select {
   border-left: 3px solid;
   padding-left: 0.5rem;
@@ -356,7 +491,8 @@ async function deleteAlias(id) {
   margin-bottom: 1rem;
 }
 
-.add-form input {
+.add-form input,
+.add-form :deep(.tag-name-input) {
   width: 200px;
 }
 

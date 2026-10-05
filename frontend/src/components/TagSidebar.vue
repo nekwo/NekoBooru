@@ -14,6 +14,8 @@
             trigger-class="tag-name"
             :tag="tag.name"
             :label="displayName(tag)"
+            :display-name="displayName(tag)"
+            :sankaku-name="tag.sankakuName || ''"
             :title="tag.name"
             :color="group.color"
           />

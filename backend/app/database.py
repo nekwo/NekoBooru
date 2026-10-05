@@ -419,6 +419,11 @@ def _migrate(conn):
             "CREATE INDEX IF NOT EXISTS ix_favorites_user_id ON favorites(user_id)"
         )
 
+    # Sankaku's spelling of a tag it names differently. Added after the
+    # owner-migration rebuild of "tags" above, which copies a fixed column list.
+    if not _column_exists(conn, "tags", "sankaku_name"):
+        conn.exec_driver_sql("ALTER TABLE tags ADD COLUMN sankaku_name VARCHAR(255)")
+
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_post_ai_analysis_post_id ON post_ai_analysis(post_id)"
     )
