@@ -14,6 +14,9 @@ const fetchMode = params.get('fetch') || ''
 // The tab the media was right-clicked in. Used to read a booru post's own tag
 // sidebar; absent when the popup was opened some other way.
 const sourceTabId = Number.parseInt(params.get('sourceTabId') || '', 10)
+// Scene details trace-moe-buttons.js read off a trace.moe result: the release
+// filename, season/episode and timestamps, already phrased as a description.
+const traceMoeScene = parseTraceMoeScene(params.get('traceMoe'))
 const AI_TAG_PROFILES = {
   anime: {
     label: 'Anime / Booru',
@@ -211,6 +214,7 @@ async function init() {
 
   renderPreview()
   importBooruTags()
+  importTraceMoeSeries()
   setupTagAutocomplete()
   setupViewportTooltips()
   els.startLocalApp.addEventListener('click', startLocalApp)
@@ -258,6 +262,32 @@ async function importBooruTags() {
   setStatus(
     `Imported ${result.tags.length} tags from ${result.label}${detail ? ` (${detail})` : ''}. Edit them or upload.`,
     'success',
+  )
+}
+
+// A trace.moe scene: tag the show as a copyright, spelled the way Danbooru
+// files it. Falls back to the show's own title when Danbooru has no tag yet.
+async function importTraceMoeSeries() {
+  const titles = Array.isArray(traceMoeScene?.seriesTitles) ? traceMoeScene.seriesTitles : []
+  if (!titles.length) return
+  let response
+  try {
+    response = await chrome.runtime.sendMessage({ type: 'nekobooru-trace-moe-series', titles })
+  } catch {
+    return
+  }
+  if (!response?.ok) return
+  const tag = normalizeTag(response.tag || response.candidates?.[0] || '')
+  if (!tag) return
+  knownTagCategories[tag] = 'copyright'
+  // NekoBooru flattens "aru!" to "aru"; the display name keeps the booru spelling.
+  knownTagDisplayNames[tag] = tag.replace(/_/g, ' ')
+  if (!tags.includes(tag)) setTags([...tags, tag])
+  setStatus(
+    response.tag
+      ? `Tagged the series as ${tag} (Danbooru copyright tag).`
+      : `No Danbooru tag found for this series; tagged it as ${tag}. Edit it if needed.`,
+    response.tag ? 'success' : '',
   )
 }
 
@@ -1148,6 +1178,7 @@ async function createPostFromPopup(options = {}) {
   }
   createdPost = await res.json()
   await maybeSaveSemanticAnalysis(createdPost, { profile: options.profile || 'extension' })
+  await saveTraceMoeScene(createdPost)
   return createdPost
 }
 
@@ -1175,7 +1206,48 @@ async function updateCreatedPost() {
   }
   createdPost = await res.json()
   await maybeSaveSemanticAnalysis(createdPost, { profile: 'extension_overwrite' })
+  await saveTraceMoeScene(createdPost)
   return createdPost
+}
+
+function parseTraceMoeScene(raw) {
+  if (!raw) return null
+  try {
+    const scene = JSON.parse(raw)
+    return scene && typeof scene.description === 'string' && scene.description ? scene : null
+  } catch {
+    return null
+  }
+}
+
+// Saved as its own semantic-analysis row (model "trace.moe") so it shows as the
+// post's semantic description and is searchable - "s01e01", "episode_1", the
+// title, or the release name. Source metadata, so it is not gated on the AI
+// "save semantic analysis" toggle, and a failure never fails the upload.
+async function saveTraceMoeScene(post) {
+  if (!traceMoeScene || !post?.id) return
+  const evidence = {
+    kind: 'trace_moe',
+    modelId: 'trace_moe',
+    model: 'trace.moe',
+    parsed: {
+      summary: traceMoeScene.description,
+      rationale: traceMoeScene.description,
+      tags: Array.isArray(traceMoeScene.tags) ? traceMoeScene.tags : [],
+    },
+    raw: traceMoeScene.filename || '',
+    traceMoe: traceMoeScene,
+  }
+  try {
+    const res = await NekoAuth.authFetch(`${instanceUrl}/api/posts/${post.id}/ai-analysis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ suggestion: { model: 'trace.moe', evidence }, profile: 'trace_moe' }),
+    })
+    if (!res.ok) console.warn('NekoBooru: could not save the trace.moe scene details', res.status)
+  } catch (e) {
+    console.warn('NekoBooru: could not save the trace.moe scene details', e)
+  }
 }
 
 async function maybeSaveSemanticAnalysis(post, options = {}) {

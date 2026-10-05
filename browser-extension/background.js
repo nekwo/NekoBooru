@@ -5,7 +5,7 @@
 // Shared with the popup: booru site detection, the injected DOM scraper, and
 // the JSON parsers. The fetching itself happens here so it runs with the
 // extension's host permissions rather than a page's origin.
-importScripts('neko-auth.js', 'booru-tags.js', 'site-import-core.js')
+importScripts('neko-auth.js', 'booru-tags.js', 'site-import-core.js', 'trace-moe-core.js')
 
 const MENU_ID = 'nekobooru-upload'
 // Same title as MENU_ID so the two read as a single "Download to NekoBooru"
@@ -90,6 +90,13 @@ const PLAYER_OVERLAY_PATTERNS = [
   '*://*.instagram.com/*',
   '*://*.tiktok.com/*',
   '*://*.redgifs.com/*',
+]
+// Pages that get the page-context download entry: the overlay players above,
+// plus trace.moe, whose result player sits under its own overlay divs. There
+// the handler grabs the clip track-cursor.js found under the pointer.
+const DOWNLOAD_PAGE_PATTERNS = [
+  ...PLAYER_OVERLAY_PATTERNS,
+  '*://trace.moe/*',
 ]
 const NEKOBOORU_PAGE_PATTERNS = [
   'http://localhost/*',
@@ -186,6 +193,13 @@ function normalizeUploadSrcUrl(raw) {
       const inferredFormat = url.pathname.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase()
       if (!url.searchParams.has('format') && inferredFormat) url.searchParams.set('format', inferredFormat)
       if (url.searchParams.has('format')) url.searchParams.set('name', 'orig')
+      url.hash = ''
+      return url.href
+    }
+    // trace.moe scene clips: ?size=l is the largest it serves.
+    if (host === 'api.trace.moe' && url.pathname.startsWith('/video/')) {
+      url.searchParams.set('size', 'l')
+      url.searchParams.delete('mute')
       url.hash = ''
       return url.href
     }
@@ -318,6 +332,35 @@ async function fetchBooruJson(url) {
   return response.json()
 }
 
+// A trace.moe match names its show, not a tag. Find the copyright tag Danbooru
+// files it under: each spelling exactly first (aliases resolve, so the English
+// title finds a romaji-named tag), then as a prefix for titles long enough not
+// to sweep in unrelated shows. Stops at the first hit.
+async function lookupTraceMoeSeries(titles) {
+  const candidates = traceMoeTagCandidates(Array.isArray(titles) ? titles : []).slice(0, 6)
+  for (const candidate of candidates) {
+    const patterns = candidate.length >= 8 ? [candidate, `${candidate}*`] : [candidate]
+    for (const pattern of patterns) {
+      const params = new URLSearchParams({
+        'search[name_or_alias_matches]': pattern,
+        'search[category]': '3',
+        'search[order]': 'count',
+        limit: '10',
+        only: 'name,category,post_count,is_deprecated',
+      })
+      let rows = []
+      try {
+        rows = await fetchBooruJson(`https://danbooru.donmai.us/tags.json?${params}`)
+      } catch {
+        continue
+      }
+      const tag = pickDanbooruCopyright(rows)
+      if (tag) return { tag, source: 'danbooru', matched: candidate }
+    }
+  }
+  return { tag: '', source: '', candidates }
+}
+
 // Gelbooru-family post APIs return one flat tag string, so the categories need
 // a second call. Safebooru ignores json=1 there and answers XML.
 async function enrichGelbooruTagTypes(site, result) {
@@ -366,6 +409,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       ? msg.xMediaIndex
       : xMediaIndexFromUrl(msg.page || target)
     if (Number.isInteger(xMediaIndex)) params.set('xMediaIndex', String(xMediaIndex))
+    if (msg.traceMoe && typeof msg.traceMoe === 'object') params.set('traceMoe', JSON.stringify(msg.traceMoe))
     openPopup('upload.html', params, sender.tab)
     return
   }
@@ -421,6 +465,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ;(async () => {
       try {
         sendResponse({ ok: true, result: await collectBooruTags(msg.pageUrl, msg.tabId) })
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e?.message || e) })
+      }
+    })()
+    return true
+  }
+
+  if (msg && msg.type === 'nekobooru-trace-moe-series') {
+    ;(async () => {
+      try {
+        sendResponse({ ok: true, ...(await lookupTraceMoeSeries(msg.titles)) })
       } catch (e) {
         sendResponse({ ok: false, error: String(e?.message || e) })
       }
@@ -697,7 +752,7 @@ function createMenu() {
       id: DOWNLOAD_PAGE_ID,
       title: 'Download to NekoBooru',
       contexts: ['page'],
-      documentUrlPatterns: PLAYER_OVERLAY_PATTERNS,
+      documentUrlPatterns: DOWNLOAD_PAGE_PATTERNS,
     })
     chrome.contextMenus.create({
       id: REVERSE_MENU_ID,
@@ -863,12 +918,17 @@ async function handleContextMenuClick(info, tab) {
     return
   }
 
-  const srcUrl = normalizeUploadSrcUrl(xAttachment?.url || info.srcUrl)
+  // A page-context click that missed the media (trace.moe's overlaid player):
+  // take what track-cursor.js found under the pointer, when it is a real URL.
+  const underPointer = !info.srcUrl && info.menuItemId === DOWNLOAD_PAGE_ID && /^https?:/i.test(lastMediaUrl)
+    ? { url: lastMediaUrl, type: lastMediaType || 'image' }
+    : null
+  const srcUrl = normalizeUploadSrcUrl(xAttachment?.url || info.srcUrl || underPointer?.url)
   if (!srcUrl) return
   const params = new URLSearchParams({
     src: srcUrl,
     page: sourcePageUrl,
-    type: xAttachment?.type || info.mediaType || 'image',
+    type: xAttachment?.type || info.mediaType || underPointer?.type || 'image',
     fetch: 'direct', // grab this src as-is; don't second-guess via yt-dlp
   })
   const xTweetId = tweetIdFromUrl(sourcePageUrl)

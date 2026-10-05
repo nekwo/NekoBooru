@@ -19,6 +19,29 @@ The extension adds three right-click menu items:
    protection, login-gated images, etc.) it falls back to downloading the bytes
    in your browser and uploading them.
 
+#### Downloading from trace.moe
+
+trace.moe has no per-result page, so after a search a **NekoBooru** button
+appears beside the result player's **Share** button. It sends the matched scene
+clip (`api.trace.moe/video/…`, at the largest `size=l`) with the show's AniList
+page as the source. Right-clicking the player also offers **Download to
+NekoBooru**, since the site's overlay keeps the click off the `<video>` itself.
+
+The button also records where the clip came from: the player's release filename,
+the season and episode parsed out of it (`S01E01`, `1x01`, `Season 1 Episode 1`,
+or fansub `Title - 05`), and the scene's start/end in the episode (from the
+clip's `x-video-start` / `x-video-end` headers). These are saved as the post's
+**Semantic Description** (model `trace.moe`), so `s01e01`, `episode_1` or the
+release name find it in search. The right-click route has no player info, so
+it saves the clip only.
+
+The series is tagged as a **copyright** tag spelled the way Danbooru files it.
+The popup takes the show's titles from trace.moe's info pane (heading and
+**Alias** row) plus the filename's title, and looks each up in Danbooru's
+tags API. Aliases resolve, so the English title still finds a romaji-named
+tag. If Danbooru has no tag for the show yet, the show's own title is used
+instead, and the popup says so.
+
 #### Downloading from another booru
 
 When the media came from a booru post page, the popup imports that post's own

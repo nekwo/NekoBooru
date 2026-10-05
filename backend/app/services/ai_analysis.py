@@ -13,6 +13,10 @@ from ..models import Post, PostAiAnalysis
 
 
 SEMANTIC_KINDS = {"qwen", "qwen_gguf"}
+# Descriptions that come from the media's source rather than a model, e.g. the
+# browser extension's trace.moe scene (release filename, season/episode,
+# timestamps). Saved and searched like Qwen output, but with no prompt.
+SOURCE_KINDS = {"trace_moe"}
 
 
 def _as_dict(value: Any) -> dict:
@@ -112,7 +116,8 @@ def _analysis_payloads(preview_or_result: Any, *, opts: Any | None = None, profi
         model_name = str(item.get("model") or evidence.get("model") or "").strip()
         model_id = str(evidence.get("modelId") or model_name or kind).strip()
         model_key = f"{kind} {model_id} {model_name}".lower()
-        if kind not in SEMANTIC_KINDS and "qwen" not in model_key:
+        from_source = kind in SOURCE_KINDS
+        if not from_source and kind not in SEMANTIC_KINDS and "qwen" not in model_key:
             continue
         if item.get("error") or evidence.get("error"):
             continue
@@ -161,8 +166,8 @@ def _analysis_payloads(preview_or_result: Any, *, opts: Any | None = None, profi
                 "model_id": model_id or "qwen",
                 "model_name": model_name or model_id or "Qwen",
                 "profile": profile or "default",
-                "prompt_hash": prompt_hash,
-                "prompt": prompt,
+                "prompt_hash": None if from_source else prompt_hash,
+                "prompt": "" if from_source else prompt,
                 "summary": summary,
                 "rationale": rationale,
                 "semantic_tags": semantic_tags,
