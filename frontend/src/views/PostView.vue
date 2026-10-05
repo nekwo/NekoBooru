@@ -1423,6 +1423,7 @@ const savedPostLayout = readPostLayout()
 const wideFrame = ref(savedPostLayout.wideFrame === true)
 const sidebarHidden = ref(savedPostLayout.sidebarHidden === true)
 // On unless turned off: the media eases into its fitted size as each post opens.
+// Saved per browser, so one person turning it off does not change it for others.
 const zoomAnimation = ref(savedPostLayout.zoomAnimation !== false)
 
 function readPostLayout() {

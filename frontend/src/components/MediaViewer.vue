@@ -134,12 +134,22 @@ const settling = ref(true)
 const wrapperStyle = computed(() => ({
   transform: `translate(calc(-50% + ${translateX.value}px), calc(-50% + ${translateY.value}px)) scale(${scale.value})`,
   opacity: loading.value || error.value ? 0 : 1,
-  ...(settling.value && !props.animateLoad ? { transition: 'opacity 0.3s' } : {}),
+  // Without the zoom-in: the outgoing media vanishes at once (a cached image
+  // can load before a fade-out would finish, and show at the old size), then
+  // the new one fades in only after it has been fitted.
+  ...(settling.value && !props.animateLoad
+    ? { transition: loading.value ? 'none' : 'opacity 0.15s ease-out' }
+    : {}),
 }))
 
 function fitNewMedia() {
+  // With the zoom-in on, the media fades in at 100% and eases to its fit.
+  // Off, it stays invisible until it has been fitted, so it never shows for a
+  // frame at the wrong size.
+  if (props.animateLoad) loading.value = false
   nextTick(() => {
     fitToScreen()
+    loading.value = false
     // Two frames: the fitted transform has to be painted before the
     // transition comes back, or it would animate anyway. Frames pause in a
     // background tab, so a timer ends it there instead.
@@ -150,7 +160,6 @@ function fitNewMedia() {
 }
 
 function onLoad(e) {
-  loading.value = false
   error.value = false
   const el = e.target
   mediaSize.value = {
@@ -161,7 +170,6 @@ function onLoad(e) {
 }
 
 function onVideoLoad(e) {
-  loading.value = false
   error.value = false
   const el = e.target
   mediaSize.value = {
@@ -367,7 +375,10 @@ watch(() => props.src, () => {
   settling.value = true
   loading.value = true
   error.value = false
-  resetZoom()
+  // Resetting now would snap the outgoing media to 100% while it fades out;
+  // without the zoom-in, the fit on load replaces the transform instead.
+  if (props.animateLoad) resetZoom()
+  else autoFit.value = true
 })
 
 // Handle Escape key to close
