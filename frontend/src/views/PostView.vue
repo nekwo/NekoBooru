@@ -11,9 +11,23 @@
           :src="post.contentUrl"
           :alt="post.filename"
           :type="mediaType"
+          :animate-load="zoomAnimation"
           @close="handleClose"
         >
           <template #controls>
+            <button
+              type="button"
+              class="layout-toggle"
+              :class="{ active: zoomAnimation }"
+              :title="zoomAnimation ? 'Turn off the zoom-in when a post opens' : 'Turn on the zoom-in when a post opens'"
+              :aria-pressed="zoomAnimation"
+              @click="toggleZoomAnimation"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="6" />
+                <path d="M20 20l-4.5-4.5M11 8v6M8 11h6" />
+              </svg>
+            </button>
             <button
               type="button"
               class="layout-toggle"
@@ -1408,6 +1422,8 @@ const POST_LAYOUT_KEY = 'nekobooru.postLayout'
 const savedPostLayout = readPostLayout()
 const wideFrame = ref(savedPostLayout.wideFrame === true)
 const sidebarHidden = ref(savedPostLayout.sidebarHidden === true)
+// On unless turned off: the media eases into its fitted size as each post opens.
+const zoomAnimation = ref(savedPostLayout.zoomAnimation !== false)
 
 function readPostLayout() {
   try {
@@ -1422,6 +1438,7 @@ function savePostLayout() {
     localStorage.setItem(POST_LAYOUT_KEY, JSON.stringify({
       wideFrame: wideFrame.value,
       sidebarHidden: sidebarHidden.value,
+      zoomAnimation: zoomAnimation.value,
     }))
   } catch {
     // localStorage unavailable
@@ -1430,6 +1447,11 @@ function savePostLayout() {
 
 function toggleWideFrame() {
   wideFrame.value = !wideFrame.value
+  savePostLayout()
+}
+
+function toggleZoomAnimation() {
+  zoomAnimation.value = !zoomAnimation.value
   savePostLayout()
 }
 

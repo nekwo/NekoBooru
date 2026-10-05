@@ -80,6 +80,12 @@ const props = defineProps({
     type: String,
     default: 'image',
   },
+  // Whether new media eases from 100% into its fitted size. Off, it appears
+  // already fitted.
+  animateLoad: {
+    type: Boolean,
+    default: true,
+  },
 })
 
 const emit = defineEmits(['close'])
@@ -121,10 +127,27 @@ const touchState = ref({
 const isImage = computed(() => props.type === 'image' || props.type === 'gif')
 const isVideo = computed(() => props.type === 'video')
 
+// True from a new src until it has been fitted, so the fit can skip the
+// zoom transition when animateLoad is off.
+const settling = ref(true)
+
 const wrapperStyle = computed(() => ({
   transform: `translate(calc(-50% + ${translateX.value}px), calc(-50% + ${translateY.value}px)) scale(${scale.value})`,
   opacity: loading.value || error.value ? 0 : 1,
+  ...(settling.value && !props.animateLoad ? { transition: 'opacity 0.3s' } : {}),
 }))
+
+function fitNewMedia() {
+  nextTick(() => {
+    fitToScreen()
+    // Two frames: the fitted transform has to be painted before the
+    // transition comes back, or it would animate anyway. Frames pause in a
+    // background tab, so a timer ends it there instead.
+    const done = () => { settling.value = false }
+    requestAnimationFrame(() => requestAnimationFrame(done))
+    setTimeout(done, 150)
+  })
+}
 
 function onLoad(e) {
   loading.value = false
@@ -134,7 +157,7 @@ function onLoad(e) {
     width: el.naturalWidth,
     height: el.naturalHeight,
   }
-  nextTick(() => fitToScreen())
+  fitNewMedia()
 }
 
 function onVideoLoad(e) {
@@ -145,7 +168,7 @@ function onVideoLoad(e) {
     width: el.videoWidth,
     height: el.videoHeight,
   }
-  nextTick(() => fitToScreen())
+  fitNewMedia()
 }
 
 function onError() {
@@ -341,6 +364,7 @@ function fitToScreen() {
 
 // Reset on src change
 watch(() => props.src, () => {
+  settling.value = true
   loading.value = true
   error.value = false
   resetZoom()
@@ -452,9 +476,11 @@ defineExpose({
   transition: opacity 0.2s ease;
 }
 
+/* :focus-visible rather than :focus-within: a clicked button keeps focus, which
+   would otherwise pin the pill open until something else was clicked. */
 .controls.visible,
 .controls:hover,
-.controls:focus-within {
+.controls:has(:focus-visible) {
   opacity: 1;
   pointer-events: auto;
 }
