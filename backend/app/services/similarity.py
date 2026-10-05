@@ -63,28 +63,34 @@ async def find_similar(
     post_id: int,
     limit: int = 24,
     max_distance: int = 12,
+    owner_ids: list[int] | None = None,
+    current_user_id: int | None = None,
 ) -> list[dict]:
     """Posts most visually similar to ``post_id`` (excluding it), nearest first.
 
     Each result is ``{"post": <dict>, "distance": <int>}``. Comparison is a
     linear scan over stored hashes — fine for a personal library.
+
+    ``owner_ids`` limits both the post itself and its matches to the libraries
+    the caller may see (None: no limit, for internal callers);
+    ``current_user_id`` fills in each result's per-user ``isFavorited``.
     """
-    target = (
-        await session.execute(select(Post.phash).where(Post.id == post_id))
-    ).scalar()
+    target_stmt = select(Post.phash).where(Post.id == post_id)
+    if owner_ids is not None:
+        target_stmt = target_stmt.where(Post.owner_id.in_(owner_ids))
+    target = (await session.execute(target_stmt)).scalar()
     if not target:
         return []
     target_int = int(target, 16)
 
-    rows = (
-        await session.execute(
-            select(Post.id, Post.phash).where(
-                Post.phash.is_not(None),
-                Post.deleted_at.is_(None),
-                Post.id != post_id,
-            )
-        )
-    ).all()
+    candidates = select(Post.id, Post.phash).where(
+        Post.phash.is_not(None),
+        Post.deleted_at.is_(None),
+        Post.id != post_id,
+    )
+    if owner_ids is not None:
+        candidates = candidates.where(Post.owner_id.in_(owner_ids))
+    rows = (await session.execute(candidates)).all()
 
     scored = []
     for pid, ph in rows:
@@ -111,7 +117,7 @@ async def find_similar(
     ).scalars().all()
     by_id = {p.id: p for p in posts}
     return [
-        {"post": by_id[pid].to_dict(), "distance": dist}
+        {"post": by_id[pid].to_dict(current_user_id), "distance": dist}
         for pid, dist in scored
         if pid in by_id
     ]

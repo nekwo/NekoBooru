@@ -229,6 +229,31 @@ class PostIsolationTests(unittest.TestCase):
         self.assertGreaterEqual(stats.json()["total_files"], 1)
         self._logout()
 
+    def test_08_find_similar_only_matches_posts_the_caller_can_see(self):
+        # Flat images all hash alike, so these are near-duplicates of
+        # alice_post (and of each other) without being byte-identical.
+        self._login("alice", "alicepassword1")
+        alice_twin = self._upload_image_post(color=(11, 20, 30))
+        similar = self.client.get(f"/api/posts/{self.alice_post['id']}/similar")
+        self.assertEqual(similar.status_code, 200, similar.text)
+        found = [item["post"]["id"] for item in similar.json()["results"]]
+        self.assertIn(alice_twin["id"], found)
+        self._logout()
+
+        self._login("bob", "bobpassword1")
+        bob_post = self._upload_image_post(color=(12, 20, 30))
+        own = self.client.get(f"/api/posts/{bob_post['id']}/similar")
+        self.assertEqual(own.status_code, 200, own.text)
+        found = [item["post"]["id"] for item in own.json()["results"]]
+        self.assertNotIn(self.alice_post["id"], found)
+        self.assertNotIn(alice_twin["id"], found)
+
+        # Someone else's post id gives nothing, not their library's matches.
+        theirs = self.client.get(f"/api/posts/{self.alice_post['id']}/similar")
+        self.assertEqual(theirs.status_code, 200, theirs.text)
+        self.assertEqual(theirs.json()["results"], [])
+        self._logout()
+
 
 if __name__ == "__main__":
     unittest.main()
