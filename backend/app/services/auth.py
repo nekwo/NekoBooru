@@ -14,6 +14,12 @@ from ..models import ApiToken, LibraryShare, Session, User
 
 _PBKDF2_ITERATIONS = 600_000
 _PBKDF2_ALGO = "sha256"
+# How stale Session.last_seen_at / ApiToken.last_used_at may get before a
+# request rewrites it. Bumping them on every request turned each
+# authenticated GET - every search, autocomplete keystroke and thumbnail -
+# into a write transaction, serialized with every other writer and queued
+# behind any background job's write lock for up to busy_timeout (30 s).
+_ACTIVITY_WRITE_INTERVAL = timedelta(minutes=1)
 
 
 def hash_password(raw: str) -> str:
@@ -55,9 +61,11 @@ async def get_session_user(db: AsyncSession, session_id: str) -> User | None:
         return None
     result = await db.execute(select(Session).where(Session.id == session_id))
     session = result.scalars().first()
-    if session is None or session.expires_at < datetime.utcnow():
+    now = datetime.utcnow()
+    if session is None or session.expires_at < now:
         return None
-    session.last_seen_at = datetime.utcnow()
+    if session.last_seen_at is None or now - session.last_seen_at >= _ACTIVITY_WRITE_INTERVAL:
+        session.last_seen_at = now
     user_result = await db.execute(select(User).where(User.id == session.user_id))
     return user_result.scalars().first()
 
@@ -89,7 +97,9 @@ async def get_api_token_user(db: AsyncSession, raw_token: str) -> User | None:
     token = result.scalars().first()
     if token is None:
         return None
-    token.last_used_at = datetime.utcnow()
+    now = datetime.utcnow()
+    if token.last_used_at is None or now - token.last_used_at >= _ACTIVITY_WRITE_INTERVAL:
+        token.last_used_at = now
     user_result = await db.execute(select(User).where(User.id == token.user_id))
     return user_result.scalars().first()
 

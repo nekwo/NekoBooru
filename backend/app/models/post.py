@@ -14,15 +14,34 @@ def _tag_detail(tag) -> dict:
     category = None
     if "category" not in inspect(tag).unloaded:
         category = tag.category
+    return tag_detail_dict(
+        tag.name,
+        tag.display_name,
+        tag.sankaku_name,
+        tag.usage_count,
+        category.name if category else None,
+        category.color if category else None,
+    )
+
+
+def tag_detail_dict(
+    name: str,
+    display_name: str | None,
+    sankaku_name: str | None,
+    usage_count: int | None,
+    category_name: str | None = None,
+    category_color: str | None = None,
+) -> dict:
+    """The tagDetails entry, from plain column values (see _tag_detail)."""
     return {
-        "name": tag.name,
+        "name": name,
         # Source spelling when the tagger supplied one ("miyu (blue archive)"),
         # otherwise the flattened name made readable.
-        "displayName": tag.display_name or tag.name.replace("_", " "),
-        "sankakuName": tag.sankaku_name,
-        "category": category.name if category else "general",
-        "categoryColor": category.color if category else "#808080",
-        "usageCount": tag.usage_count or 0,
+        "displayName": display_name or name.replace("_", " "),
+        "sankakuName": sankaku_name,
+        "category": category_name if category_name is not None else "general",
+        "categoryColor": category_color if category_name is not None else "#808080",
+        "usageCount": usage_count or 0,
     }
 
 
@@ -80,7 +99,26 @@ class Post(Base):
         """Path to the thumbnail."""
         return f"{self.sha256[:2]}/{self.sha256}.jpg"
 
-    def to_dict(self, current_user_id: int | None = None):
+    def to_dict(
+        self,
+        current_user_id: int | None = None,
+        *,
+        tag_details: list[dict] | None = None,
+        is_favorited: bool | None = None,
+    ):
+        # Callers that already fetched tags/favorites as plain rows (the list
+        # endpoint) pass them in, so self.tags / self.favorites are never
+        # touched - they are not loaded there and would raise under async.
+        if tag_details is None:
+            # Category/colour/count for the grouped tag sidebar. Post queries
+            # eager-load Tag.category for this; _tag_detail() degrades to an
+            # uncategorised entry rather than raising if some caller forgets,
+            # because lazy-loading here would fail under async.
+            tag_details = [_tag_detail(tag) for tag in self.tags] if self.tags else []
+        if is_favorited is None:
+            is_favorited = current_user_id is not None and any(
+                f.user_id == current_user_id for f in (self.favorites or [])
+            )
         return {
             "id": self.id,
             "sha256": self.sha256,
@@ -95,16 +133,9 @@ class Post(Base):
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "deletedAt": self.deleted_at.isoformat() if self.deleted_at else None,
-            "tags": [tag.name for tag in self.tags] if self.tags else [],
-            # Category/colour/count for the grouped tag sidebar. Post queries
-            # eager-load Tag.category for this; _tag_detail() degrades to an
-            # uncategorised entry rather than raising if some caller forgets,
-            # because lazy-loading here would fail under async.
-            "tagDetails": [_tag_detail(tag) for tag in self.tags] if self.tags else [],
-            "isFavorited": (
-                current_user_id is not None
-                and any(f.user_id == current_user_id for f in (self.favorites or []))
-            ),
+            "tags": [detail["name"] for detail in tag_details],
+            "tagDetails": tag_details,
+            "isFavorited": is_favorited,
             "contentUrl": f"/api/media/posts/{self.content_path}",
             "thumbUrl": f"/api/media/thumbs/{self.thumb_path}",
         }

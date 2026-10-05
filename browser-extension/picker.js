@@ -424,29 +424,38 @@ function lastWord() {
   return words[words.length - 1] || ''
 }
 
+// Autocomplete waits for a short pause in typing instead of firing on every
+// keystroke, and the sequence number drops answers to words already replaced.
+let suggestTimer = null
+let suggestSeq = 0
+
 function onSearchInput() {
   clearTimeout(debounceTimer)
   // Re-run the search as the query changes (debounced).
   debounceTimer = setTimeout(runSearch, 300)
 
+  clearTimeout(suggestTimer)
   const word = lastWord()
+  const seq = ++suggestSeq
   if (!word) {
     hideSuggestions()
     return
   }
-  setTimeout(async () => {
+  suggestTimer = setTimeout(async () => {
     try {
       const res = await NekoAuth.authFetch(
         `${instanceUrl}/api/tags/autocomplete?q=${encodeURIComponent(word)}`
       )
-      if (!res.ok) return
-      currentSuggestions = await res.json()
+      if (!res.ok || seq !== suggestSeq) return
+      const found = await res.json()
+      if (seq !== suggestSeq) return
+      currentSuggestions = found
       selectedIndex = -1
       renderSuggestions()
     } catch {
-      hideSuggestions()
+      if (seq === suggestSeq) hideSuggestions()
     }
-  }, 0)
+  }, 150)
 }
 
 function renderSuggestions() {
@@ -476,6 +485,8 @@ function renderSuggestions() {
 }
 
 function pickSuggestion(tag) {
+  clearTimeout(suggestTimer)
+  suggestSeq += 1
   const words = els.search.value.split(/\s+/)
   words[words.length - 1] = tag.name
   els.search.value = words.join(' ') + ' '
@@ -492,6 +503,8 @@ function hideSuggestions() {
 
 function commitSearch() {
   clearTimeout(debounceTimer)
+  clearTimeout(suggestTimer)
+  suggestSeq += 1
   hideSuggestions()
   runSearch()
   els.search.focus()

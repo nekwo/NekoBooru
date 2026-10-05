@@ -69,6 +69,8 @@ const suggestions = ref([])
 const selectedIndex = ref(-1)
 const NAME_PART_AUTOCOMPLETE_KEY = 'nekobooru.namePartAutocompleteEnabled'
 let debounceTimer = null
+// Bumped per lookup, so a slow answer for an older query cannot replace a newer one.
+let autocompleteSeq = 0
 
 function processTagString(str) {
   // Split by comma, clean up each tag
@@ -119,13 +121,22 @@ function onInput() {
   clearTimeout(debounceTimer)
   debounceTimer = setTimeout(async () => {
     const query = inputValue.value.trim()
-    if (query.length >= 1) {
-      suggestions.value = await tagsStore.autocomplete(query, autocompleteOptions())
-      selectedIndex.value = -1
-    } else {
+    const seq = ++autocompleteSeq
+    if (!query) {
       suggestions.value = []
       selectedIndex.value = -1
+      return
     }
+    // Local tags answer in a few ms; the booru top-up can take seconds, so show
+    // the local ones first and add the booru ones when (and if) they arrive.
+    const local = await tagsStore.autocomplete(query, { ...autocompleteOptions(), includeRemote: false })
+    if (seq !== autocompleteSeq) return
+    suggestions.value = local
+    selectedIndex.value = -1
+    if (local.length >= 10) return
+    const merged = await tagsStore.autocomplete(query, autocompleteOptions())
+    // The server keeps local rows first, so the highlighted row stays put.
+    if (seq === autocompleteSeq && merged.length > local.length) suggestions.value = merged
     // With remote suggestions on, this query can reach a public booru, so it
     // waits for a pause in typing rather than firing on every keystroke.
   }, 300)

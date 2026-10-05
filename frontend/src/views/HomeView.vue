@@ -2126,7 +2126,14 @@ function normalizePerPage(value) {
   return perPageOptions.includes(parsed) ? parsed : 42
 }
 
+// The search in flight. A newer one aborts it, so a slow earlier search can
+// never land on top of newer results.
+let postsAbort = null
+
 async function fetchPosts() {
+  postsAbort?.abort()
+  const controller = new AbortController()
+  postsAbort = controller
   loading.value = true
   try {
     // Build query with safety filter based on checkboxes
@@ -2148,15 +2155,19 @@ async function fetchPosts() {
     postsStore.setBrowseContext({ query, sort: sortBy.value, order: sortOrder.value })
 
     const result = await fetch(
-      `/api/posts?q=${encodeURIComponent(query)}&page=${page.value}&limit=${perPage.value}&sort=${sortBy.value}&order=${sortOrder.value}`
+      `/api/posts?q=${encodeURIComponent(query)}&page=${page.value}&limit=${perPage.value}&sort=${sortBy.value}&order=${sortOrder.value}`,
+      { signal: controller.signal }
     ).then(r => r.json())
+    if (controller !== postsAbort) return
 
     posts.value = result.results
     total.value = result.total
     pages.value = result.pages
   } catch (e) {
+    if (e?.name === 'AbortError') return
     console.error('Failed to fetch posts:', e)
   } finally {
+    if (controller !== postsAbort) return
     loading.value = false
     if (pendingScrollTop.value) {
       pendingScrollTop.value = false

@@ -424,6 +424,16 @@ def _migrate(conn):
     if not _column_exists(conn, "tags", "sankaku_name"):
         conn.exec_driver_sql("ALTER TABLE tags ADD COLUMN sankaku_name VARCHAR(255)")
 
+    # post_tags' primary key is (post_id, tag_id), which cannot answer "which
+    # posts carry tag X" - the lookup every tag search, negation and
+    # neighbor query makes. Without this SQLite built a throwaway automatic
+    # index over the whole junction table inside every such statement
+    # (~0.5 s each at ~360k rows). Placed after the post_tags rebuilds above,
+    # which recreate the table without it.
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_post_tags_tag_id ON post_tags(tag_id, post_id)"
+    )
+
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_post_ai_analysis_post_id ON post_ai_analysis(post_id)"
     )

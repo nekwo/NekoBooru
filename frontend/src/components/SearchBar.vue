@@ -73,13 +73,19 @@ function onSemanticSearchSettingChanged(event) {
   semanticSearchEnabled.value = event.detail?.enabled === true
 }
 
+// Bumped per lookup, so a slow answer for an older word cannot replace a newer one.
+let autocompleteSeq = 0
+
 function onInput() {
   clearTimeout(debounceTimer)
   debounceTimer = setTimeout(async () => {
     const words = searchQuery.value.split(' ')
     const lastWord = words[words.length - 1]
+    const seq = ++autocompleteSeq
     if (lastWord && lastWord.length >= 1) {
-      suggestions.value = await tagsStore.autocomplete(lastWord.replace('-', ''), autocompleteOptions())
+      const found = await tagsStore.autocomplete(lastWord.replace('-', ''), autocompleteOptions())
+      if (seq !== autocompleteSeq) return
+      suggestions.value = found
       selectedIndex.value = -1
       applyAutomaticSearch()
     } else {

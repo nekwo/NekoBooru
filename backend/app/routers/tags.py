@@ -45,14 +45,16 @@ def _tag_name_autocomplete_condition(q: str, name_parts: bool = False):
 
     pattern = _escape_like(normalized)
     name = func.lower(Tag.name)
+    # SQLite's LIKE already ignores ASCII case and its lower() only folds
+    # ASCII, so LIKE on the raw column matches exactly what lower(name) LIKE
+    # did - minus a lower() call per tag per pattern on every keystroke.
     if name_parts:
-        match_condition = name.like(f"%{pattern}%", escape="\\")
+        match_condition = Tag.name.like(f"%{pattern}%", escape="\\")
     else:
-        match_condition = (
-            (name == normalized)
-            | name.like(f"{pattern}%", escape="\\")
-            | name.like(f"%\\_{pattern}", escape="\\")
-            | name.like(f"%\\_{pattern}\\_%", escape="\\")
+        # Prefix match, or the term as a whole "_"-separated segment
+        # (equal / "_term" suffix / "_term_" infix) in one instr().
+        match_condition = Tag.name.like(f"{pattern}%", escape="\\") | (
+            func.instr("_" + name + "_", f"_{normalized}_") > 0
         )
     rank = case(
         (name == normalized, 0),

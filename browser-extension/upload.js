@@ -768,6 +768,9 @@ function removeTag(tag) {
   els.tags.focus()
 }
 
+// Bumped per lookup, so a slow answer for an older word cannot replace a newer one.
+let suggestSeq = 0
+
 function onTagInput() {
   // A comma finalises every tag before it, keeping only the trailing fragment.
   if (els.tags.value.includes(',')) {
@@ -779,21 +782,33 @@ function onTagInput() {
 
   clearTimeout(debounceTimer)
   const word = els.tags.value.trim()
+  const seq = ++suggestSeq
   if (!word) {
     hideSuggestions()
     return
   }
   debounceTimer = setTimeout(async () => {
     try {
-      const res = await NekoAuth.authFetch(
-        `${instanceUrl}/api/tags/autocomplete?q=${encodeURIComponent(word)}&includeRemote=true`
-      )
-      if (!res.ok) return
-      currentSuggestions = await res.json()
+      // Your own tags first: they answer in a few ms, while the booru top-up
+      // can take seconds. The boorus are only asked when few local tags match.
+      const url = `${instanceUrl}/api/tags/autocomplete?q=${encodeURIComponent(word)}`
+      const res = await NekoAuth.authFetch(url)
+      if (!res.ok || seq !== suggestSeq) return
+      const local = await res.json()
+      if (seq !== suggestSeq) return
+      currentSuggestions = local
       selectedIndex = -1
       renderSuggestions()
+      if (local.length >= 10) return
+      const remoteRes = await NekoAuth.authFetch(`${url}&includeRemote=true`)
+      if (!remoteRes.ok || seq !== suggestSeq) return
+      const merged = await remoteRes.json()
+      // The server keeps local rows first, so a highlighted row stays put.
+      if (seq !== suggestSeq || merged.length <= local.length) return
+      currentSuggestions = merged
+      renderSuggestions()
     } catch {
-      hideSuggestions()
+      if (seq === suggestSeq) hideSuggestions()
     }
     // Long enough that a normal typing run costs a request per pause rather
     // than per keystroke - these queries can reach public boorus, which is not

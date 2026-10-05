@@ -17,7 +17,7 @@ from ..database import get_db, async_session
 from ..config import settings
 from ..dependencies import get_current_user
 from ..models import Post, Tag, TagCategory, TagAlias, TagImplication, Favorite, User
-from ..models.post import PostTag
+from ..models.post import PostTag, tag_detail_dict
 from ..services.auth import visible_owner_ids
 from ..utils.hashing import calculate_sha256
 from ..services.media import (
@@ -320,6 +320,45 @@ async def process_tags_for_post(db: AsyncSession, post_id: int, tag_names: list[
     await apply_tags_for_post(db, post_id, tag_names, owner_id=owner_id)
 
 
+async def _serialize_post_page(db: AsyncSession, posts: list[Post], current_user_id: int) -> list[dict]:
+    """Post.to_dict() for a page of posts, fetching tags and favorites as flat rows.
+
+    A page averages ~40 tags per post; selectinload() hydrated every one as a
+    Tag (plus its category) ORM object, which cost more than the search itself.
+    Ordered by tag_id per post, the same order the selectinload returned.
+    """
+    ids = [post.id for post in posts]
+    if not ids:
+        return []
+    details: dict[int, list[dict]] = {post_id: [] for post_id in ids}
+    rows = await db.execute(
+        select(
+            PostTag.c.post_id, Tag.name, Tag.display_name, Tag.sankaku_name, Tag.usage_count,
+            TagCategory.name, TagCategory.color,
+        )
+        .select_from(PostTag)
+        .join(Tag, Tag.id == PostTag.c.tag_id)
+        .outerjoin(TagCategory, TagCategory.id == Tag.category_id)
+        .where(PostTag.c.post_id.in_(ids))
+        .order_by(PostTag.c.post_id, PostTag.c.tag_id)
+    )
+    for post_id, *columns in rows.all():
+        details[post_id].append(tag_detail_dict(*columns))
+    favorited = set(
+        (
+            await db.execute(
+                select(Favorite.post_id).where(
+                    Favorite.post_id.in_(ids), Favorite.user_id == current_user_id
+                )
+            )
+        ).scalars().all()
+    )
+    return [
+        post.to_dict(current_user_id, tag_details=details[post.id], is_favorited=post.id in favorited)
+        for post in posts
+    ]
+
+
 @router.get("/posts")
 async def list_posts(
     q: str = Query("", description="Search query"),
@@ -339,10 +378,11 @@ async def list_posts(
         semantic_search=load_options().semanticSearchEnabled,
         owner_ids=owner_ids,
         current_user_id=current_user.id,
+        eager_load=False,
     )
 
     return {
-        "results": [p.to_dict(current_user.id) for p in posts],
+        "results": await _serialize_post_page(db, posts, current_user.id),
         "total": total,
         "page": page,
         "limit": limit,
