@@ -463,11 +463,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (src.origin !== pageUrl.origin) {
           throw new Error('The post media must come from the same NekoBooru instance.')
         }
+        // The page sends the image itself when it can: media URLs need the
+        // instance's login, and this worker's fetch does not carry its cookie.
+        const dataUrl = typeof msg.dataUrl === 'string' && msg.dataUrl.startsWith('data:image/') ? msg.dataUrl : ''
         const info = {
           srcUrl: src.href,
           pageUrl: pageUrl.href,
-          mediaType: msg.mediaType || 'image',
+          mediaType: dataUrl ? 'image' : msg.mediaType || 'image',
           frameId: 0,
+          dataUrl,
+          filename: msg.filename || '',
         }
         const services = msg.mode === 'all'
           ? REVERSE_SEARCH_SERVICES
@@ -1195,6 +1200,10 @@ async function openReverseUpload(service, tab, info, active = true) {
     openTinEyeUpload(tab, info, active)
     return
   }
+  if (service.upload === 'google') {
+    openGoogleLensUpload(tab, info, active)
+    return
+  }
 
   try {
     const blob = await blobForReverseSearch(tab, info)
@@ -1288,6 +1297,59 @@ function waitForTabComplete(tabId, serviceName = 'reverse-search site') {
   })
 }
 
+// Google answers a plain form post to lens.google.com/v3/upload with 403 now,
+// so this opens Google's home page and hands the file to Lens's own upload box.
+async function openGoogleLensUpload(tab, info, active = true) {
+  try {
+    const blob = await blobForReverseSearch(tab, info)
+    const dataUrl = await blobToDataUrl(blob)
+    const created = await createReverseSearchTab('https://www.google.com/webhp', tab, active)
+    await waitForTabComplete(created.id, 'Google')
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: created.id },
+      func: injectGoogleLensUpload,
+      args: [dataUrl, reverseUploadFilename(info)],
+    })
+    if (!result?.result?.ok) throw new Error(result?.result?.error || 'Google Lens upload injection failed.')
+  } catch (e) {
+    notifyReverseSearch(e.message || 'Google Lens upload failed.')
+  }
+}
+
+async function injectGoogleLensUpload(dataUrl, filename) {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const inputSelector = 'input[type="file"][name="encoded_image"]'
+  const buttonSelector = 'div[data-base-lens-url], div[data-is-images-mode], [aria-label="Search by image"]'
+  let input = document.querySelector(inputSelector)
+  let clicked = false
+  for (let i = 0; !input && i < 150; i += 1) {
+    // The upload box only exists once the camera button has been opened.
+    const button = document.querySelector(buttonSelector)
+    if (button && !clicked) {
+      button.click()
+      clicked = true
+    }
+    await wait(100)
+    input = document.querySelector(inputSelector)
+  }
+  if (!input) {
+    return {
+      ok: false,
+      error: location.pathname.startsWith('/sorry')
+        ? 'Google is asking for a CAPTCHA. Open google.com once, finish it, then try again.'
+        : 'Could not find the Google Lens upload box. Accept or dismiss any Google consent prompt, then try again.',
+    }
+  }
+
+  const response = await fetch(dataUrl)
+  const blob = await response.blob()
+  const transfer = new DataTransfer()
+  transfer.items.add(new File([blob], filename || 'nekobooru-search.png', { type: blob.type || 'image/png' }))
+  input.files = transfer.files
+  input.dispatchEvent(new Event('change', { bubbles: true }))
+  return { ok: true }
+}
+
 async function injectTinEyeUpload(dataUrl, filename) {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const fileInputSelector = 'input[type="file"]'
@@ -1338,6 +1400,7 @@ async function injectTraceMoeUpload(dataUrl, filename) {
 }
 
 function reverseUploadFilename(info) {
+  if (info.dataUrl && info.filename) return info.filename
   const raw = info.srcUrl || lastMediaUrl || ''
   const base = filenameFromUrl(raw || 'nekobooru-search.png')
   if (shouldCaptureFrameForUpload(info, raw)) return base.replace(/\.[^.]+$/, '') + '-frame.png'
@@ -1346,6 +1409,7 @@ function reverseUploadFilename(info) {
 }
 
 async function blobForReverseSearch(tab, info, options = {}) {
+  if (info.dataUrl) return dataUrlToBlob(info.dataUrl)
   const directUrl = info.srcUrl || lastMediaUrl
   const preferFrame = shouldCaptureFrameForUpload(info, directUrl)
   if (directUrl && !preferFrame) {

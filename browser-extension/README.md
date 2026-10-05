@@ -73,9 +73,14 @@ import stays silent.
 
 Right-click an image, GIF, or video and choose **NekoBooru reverse image search**
 to open SauceNAO, IQDB, TinEye, Google Lens, trace.moe, or all of them at once.
-The same full stack is available from **Search Online → Full stack** on every
-NekoBooru post page. **Quick Lens** opens only Google Lens, while **Exact lookup**
-uses the app directly and does not require the extension.
+On a NekoBooru post page, the **Search** tab lists the same providers and each
+opens one tab. The page reads the image (or the current video frame) itself and
+hands the bytes to the extension, since media URLs need the instance's login.
+Without the extension, SauceNAO and IQDB still work as plain form uploads;
+Google Lens, TinEye, and trace.moe need it. Google now refuses a plain post to
+Lens's upload endpoint (403), so the extension opens google.com and gives the
+file to Lens's own upload box instead. **Exact lookup** uses the app directly
+and does not require the extension.
 
 On a Pixiv artwork page, the NekoBooru download icon appears immediately to the
 right of Pixiv's Share button using the same native control styling. It imports

@@ -23,7 +23,14 @@ let lastEditableTarget = null
 window.addEventListener('message', (event) => {
   const message = event.data
   if (event.source !== window || event.origin !== location.origin) return
-  if (message?.type !== 'nekobooru-reverse-search-request' || message.source !== 'nekobooru-app') return
+  if (message?.source !== 'nekobooru-app') return
+  // Lets a post page know up front that the extension is here, so it can
+  // decide what to offer before the click rather than after a timeout.
+  if (message.type === 'nekobooru-extension-ping') {
+    window.postMessage({ type: 'nekobooru-extension-pong', requestId: message.requestId, reverseSearch: true }, location.origin)
+    return
+  }
+  if (message.type !== 'nekobooru-reverse-search-request') return
   try {
     chrome.runtime.sendMessage({
       type: 'nekobooru-open-reverse-search',
@@ -32,6 +39,7 @@ window.addEventListener('message', (event) => {
       src: message.mediaUrl,
       mediaType: message.mediaType,
       filename: message.filename,
+      dataUrl: message.dataUrl,
     }, (response) => {
       const error = chrome.runtime.lastError
       window.postMessage({

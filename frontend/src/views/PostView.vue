@@ -1,5 +1,9 @@
 <template>
-  <div class="post-view" v-if="post">
+  <div
+    class="post-view"
+    :class="{ 'wide-frame': wideFrame, 'sidebar-hidden': sidebarHidden }"
+    v-if="post"
+  >
     <div class="post-content">
       <div class="media-container">
         <MediaViewer
@@ -8,7 +12,35 @@
           :alt="post.filename"
           :type="mediaType"
           @close="handleClose"
-        />
+        >
+          <template #controls>
+            <button
+              type="button"
+              class="layout-toggle"
+              :class="{ active: wideFrame }"
+              :title="wideFrame ? 'Normal width' : 'Widen the frame to the full window'"
+              :aria-pressed="wideFrame"
+              @click="toggleWideFrame"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="layout-toggle"
+              :class="{ active: sidebarHidden }"
+              :title="sidebarHidden ? 'Pin the sidebar' : 'Hide the sidebar (hover the right edge to peek)'"
+              :aria-pressed="sidebarHidden"
+              @click="toggleSidebarHidden"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="M15 4v16" />
+              </svg>
+            </button>
+          </template>
+        </MediaViewer>
         <button
           v-if="prevId != null"
           type="button"
@@ -28,46 +60,58 @@
       </div>
     </div>
 
+    <!-- With the sidebar hidden, this strip on the right edge brings it back on hover. -->
+    <div v-if="sidebarHidden" class="sidebar-peek" aria-hidden="true"><span></span></div>
     <aside class="post-sidebar">
-      <div class="sidebar-section">
-        <h3>Info</h3>
-        <dl class="info-list">
-          <dt>ID</dt>
-          <dd>{{ post.id }}</dd>
-          <dt>Size</dt>
-          <dd>{{ post.width }} x {{ post.height }}</dd>
-          <dt>File size</dt>
-          <dd>{{ formatFileSize(post.fileSize) }}</dd>
-          <dt>Type</dt>
-          <dd>{{ post.extension }}</dd>
-          <dt>Uploaded</dt>
-          <dd>{{ formatDate(post.createdAt) }}</dd>
-          <template v-if="tweetUrl">
-            <dt>Tweet</dt>
-            <dd>
-              <a class="external-link" :href="tweetUrl" target="_blank" rel="noopener noreferrer">
-                Open Tweet
-              </a>
-            </dd>
-          </template>
-          <template v-if="pixivUrl">
-            <dt>Pixiv</dt>
-            <dd>
-              <a class="external-link" :href="pixivUrl" target="_blank" rel="noopener noreferrer">
-                Open in Pixiv
-              </a>
-            </dd>
-          </template>
-          <template v-if="booruSourceLink">
-            <dt>{{ booruSourceLink.label }}</dt>
-            <dd>
-              <a class="external-link" :href="booruSourceLink.url" target="_blank" rel="noopener noreferrer">
-                Open on {{ booruSourceLink.label }}
-              </a>
-            </dd>
-          </template>
-          <dt>Rating</dt>
-          <dd class="safety-buttons">
+      <div class="sidebar-section post-info">
+        <div class="post-info-head">
+          <div class="post-info-id">
+            <strong>#{{ post.id }}</strong>
+            <span v-if="post.extension" class="post-info-type">{{ String(post.extension).replace(/^\./, '') }}</span>
+          </div>
+          <time class="post-info-date" :datetime="post.createdAt" :title="formatFullDate(post.createdAt)">
+            {{ formatRelativeDate(post.createdAt) }}
+          </time>
+        </div>
+
+        <div class="post-info-meta">
+          <span title="Dimensions">{{ post.width }} × {{ post.height }}</span>
+          <span class="post-info-dot" aria-hidden="true">·</span>
+          <span title="File size">{{ formatFileSize(post.fileSize) }}</span>
+        </div>
+
+        <div v-if="tweetUrl || pixivUrl || booruSourceLink" class="post-info-sources">
+          <a
+            v-if="tweetUrl"
+            class="post-info-chip"
+            :href="tweetUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open on X"
+            aria-label="Open on X"
+          >
+            <svg class="post-info-chip-logo" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z" />
+            </svg>
+            <span aria-hidden="true">↗</span>
+          </a>
+          <a v-if="pixivUrl" class="post-info-chip" :href="pixivUrl" target="_blank" rel="noopener noreferrer">
+            Pixiv <span aria-hidden="true">↗</span>
+          </a>
+          <a
+            v-if="booruSourceLink"
+            class="post-info-chip"
+            :href="booruSourceLink.url"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {{ booruSourceLink.label }} <span aria-hidden="true">↗</span>
+          </a>
+        </div>
+
+        <div class="post-info-rating">
+          <span>Rating</span>
+          <div class="safety-buttons">
             <button
               class="safety-btn safe"
               :class="{ active: post.safety === 'safe' }"
@@ -86,8 +130,8 @@
               @click="setSafety('unsafe')"
               title="Unsafe"
             ></button>
-          </dd>
-        </dl>
+          </div>
+        </div>
       </div>
 
       <div v-if="semanticSidebarAnalysis" class="sidebar-section semantic-description-section">
@@ -145,352 +189,15 @@
 
       <div class="sidebar-section">
         <h3>Tags</h3>
-        <TagSidebar :tags="post.tagDetails || post.tags" />
+        <div :class="{ 'tag-scroll-box': tagListScrolls }">
+          <TagSidebar :tags="post.tagDetails || post.tags" />
+        </div>
         <button class="btn btn-secondary edit-tags-btn" @click="openTagEditor">
           Edit Tags
         </button>
-        <template v-if="autoTagControlsVisible">
-        <div class="ai-profile-actions" aria-label="AI tag preview profiles">
-          <button
-            v-for="profile in autoTagProfiles"
-            :key="profile.id"
-            type="button"
-            class="btn btn-secondary ai-profile-btn"
-            :class="{ active: activeAutoTagProfile === profile.id }"
-            :disabled="autoTagLoading"
-            :data-tooltip="profile.tooltip"
-            @click="previewAutoTags(profile.id)"
-          >
-            {{ autoTagLoading && activeAutoTagProfile === profile.id ? 'Running...' : profile.label }}
-          </button>
-        </div>
-        <!-- Outside the model picker: it enriches whatever the models found, and
-             a control that changes the result should not sit behind a details. -->
-        <label class="booru-lookup-row">
-          <input type="checkbox" v-model="postAutoTagSettings.booruLookupEnabled" />
-          <span>
-            <strong>Look up character series on Danbooru</strong>
-            <small>Adds the series for recognised characters. Only adds tags; never replaces model output.</small>
-          </span>
-        </label>
-        <div v-if="mediaType === 'video'" class="frame-picker">
-          <span class="frame-picker-label">{{ framePickerLabel }}</span>
-          <button type="button" class="btn btn-secondary frame-picker-btn" @click="pinCurrentFrame">
-            Analyse this frame
-          </button>
-          <button
-            type="button"
-            class="btn btn-secondary frame-picker-btn"
-            :disabled="videoFrameTime === null"
-            @click="videoFrameTime = null"
-          >Auto</button>
-        </div>
-        <div v-if="autoTagLoading" class="ai-inline-status">
-          <div class="ai-inline-status-head">
-            <strong>{{ autoTagStageTitle }}</strong>
-            <span>{{ autoTagRunElapsed }}s</span>
-          </div>
-          <div class="auto-progress compact">
-            <div class="auto-progress-fill" :style="{ width: autoTagOverallProgress + '%' }"></div>
-          </div>
-          <small>{{ autoTagStageMessage }}</small>
-        </div>
-        <details class="ai-model-picker" :open="autoModelPickerOpen" @toggle="autoModelPickerOpen = $event.target.open">
-          <summary>AI models</summary>
-          <div class="ai-model-list">
-            <label v-for="model in postModelRows" :key="model.id" class="ai-model-row">
-              <input
-                type="checkbox"
-                v-model="postAutoTagSettings[model.settingKey]"
-                :disabled="!model.canToggle"
-              />
-              <span>
-                <strong class="ai-model-name">
-                  {{ model.name }}
-                  <button
-                    type="button"
-                    class="ai-info-icon"
-                    :data-tooltip="postModelInfoTitle(model)"
-                    :aria-label="postModelInfoTitle(model)"
-                    @mouseenter="showModelTooltip($event, postModelInfoTitle(model))"
-                    @focus="showModelTooltip($event, postModelInfoTitle(model))"
-                    @mouseleave="hideModelTooltip"
-                    @blur="hideModelTooltip"
-                    @click.prevent
-                  >i</button>
-                </strong>
-                <small>
-                  {{ model.statusLabel }}
-                  · {{ model.loaded ? 'loaded' : 'not loaded' }}
-                </small>
-              </span>
-              <button
-                type="button"
-                class="btn btn-secondary ai-load-btn"
-                @click.prevent="model.loaded ? unloadAutoTagWeights(model.id) : loadAutoTagWeights(model.id)"
-                :disabled="autoTagLoading || !model.downloaded || !model.runtimeAvailable"
-              >
-                {{ model.loaded ? 'Unload' : 'Load' }}
-              </button>
-            </label>
-          </div>
-        </details>
-        </template>
-      </div>
-
-      <div class="sidebar-section">
-        <h3>Similar</h3>
-        <button class="btn btn-secondary similar-btn" @click="loadSimilar" :disabled="similarLoading">
-          {{ similarLoading ? 'Searching...' : 'Find Similar' }}
-        </button>
-        <div v-if="similarLoaded && !similar.length" class="similar-empty">
-          No visually similar posts found.
-        </div>
-        <div v-if="similar.length" class="similar-grid">
-          <router-link
-            v-for="item in similar"
-            :key="item.post.id"
-            :to="`/post/${item.post.id}`"
-            class="similar-thumb"
-            :title="`distance ${item.distance}`"
-          >
-            <img :src="item.post.thumbUrl" :alt="item.post.filename" loading="lazy" />
-          </router-link>
-        </div>
-      </div>
-
-      <div class="sidebar-section online-search-section">
-        <h3>Search Online</h3>
-        <p class="online-search-intro">
-          Check exact booru files locally, or upload this post/frame to a visual search provider.
-        </p>
-        <div class="online-search-actions">
-          <button class="btn btn-secondary" @click="findExactOnlineMatches" :disabled="onlineExactLoading">
-            {{ onlineExactLoading ? 'Checking...' : 'Exact lookup' }}
-          </button>
-          <button class="btn btn-secondary" @click="quickLensSearch" :disabled="onlineSearchBusy !== ''">
-            {{ onlineSearchBusy === 'lens' ? 'Preparing...' : 'Quick Lens' }}
-          </button>
-          <button class="btn" @click="fullReverseSearch" :disabled="onlineSearchBusy !== ''">
-            {{ onlineSearchBusy === 'full' ? 'Starting...' : 'Full stack' }}
-          </button>
-        </div>
-        <small class="online-search-hint">
-          Exact lookup sends only an MD5 to Danbooru/Gelbooru. Quick Lens opens one tab. Full stack uses the NekoBooru extension.
-        </small>
-        <p v-if="onlineSearchMessage" class="online-search-message" :class="onlineSearchMessageKind">
-          {{ onlineSearchMessage }}
-        </p>
-        <div v-if="onlineExactResult" class="online-exact-results">
-          <div class="online-exact-summary">
-            <strong>
-              {{ onlineExactResult.matches.length
-                ? `${onlineExactResult.matches.length} exact match${onlineExactResult.matches.length === 1 ? '' : 'es'}`
-                : 'No byte-exact matches' }}
-            </strong>
-            <code>{{ onlineExactResult.md5 }}</code>
-          </div>
-          <a
-            v-for="match in onlineExactResult.matches"
-            :key="`${match.provider}-${match.id}`"
-            class="online-match-row"
-            :href="match.postUrl"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <span>
-              <strong>{{ match.providerLabel }} #{{ match.id }}</strong>
-              <small>{{ match.width && match.height ? `${match.width} × ${match.height}` : 'Dimensions unknown' }}{{ match.rating ? ` · ${match.rating}` : '' }}</small>
-            </span>
-            <span aria-hidden="true">↗</span>
-          </a>
-          <small v-if="onlineExactUnavailableProviders.length" class="online-provider-warning">
-            Unavailable: {{ onlineExactUnavailableProviders.join(', ') }}. Try again later or use visual search.
-          </small>
-          <small v-else-if="!onlineExactResult.matches.length">
-            Resizing or recompression changes the MD5; use Quick Lens or Full stack next.
-          </small>
-        </div>
       </div>
 
       <div class="sidebar-section actions">
-        <details class="post-optimize-menu" open>
-          <summary class="post-optimize-summary">
-            <span>
-              <strong>Media Optimizer</strong>
-              <small>Quality-controlled, review-first replacement</small>
-            </span>
-            <span class="optimize-state-badge" :class="postOptimizeState">
-              {{ postOptimizeStateLabel }}
-            </span>
-          </summary>
-
-          <div class="post-optimize-body">
-            <section class="optimize-section">
-              <div class="optimize-section-head">
-                <div>
-                  <strong>Optimization profile</strong>
-                  <small>{{ postOptimizeProfileName }} settings</small>
-                </div>
-                <span v-if="postOptimizeProfile === 'custom'" class="optimize-custom-badge">Custom</span>
-              </div>
-              <MediaOptimizeProfiles
-                :profiles="mediaOptimizeProfiles"
-                :active-profile="postOptimizeProfile"
-                compact
-                @select="applyPostOptimizeProfile"
-              />
-            </section>
-
-            <div class="optimize-context-grid">
-              <div class="optimize-context-card">
-                <span>Source</span>
-                <strong>{{ postOptimizeSourceResolution }}</strong>
-                <small>{{ formatFileSize(post.fileSize) }}{{ postOptimizeIsVideo && postCurrentVideoBitrate ? ` · ~${postCurrentVideoBitrate.toLocaleString()} kbps` : '' }}</small>
-              </div>
-              <div class="optimize-context-card target">
-                <span>Target policy</span>
-                <strong>{{ postOptimizeTargetResolution }}</strong>
-                <small>{{ postOptimizeTargetDetail }}</small>
-              </div>
-            </div>
-
-            <details class="optimize-advanced">
-              <summary>
-                <span>Advanced controls</span>
-                <small>Fine-tune dimensions and quality budgets</small>
-              </summary>
-              <div class="post-optimize-grid">
-                <label v-if="postOptimizeIsImage">
-                  Image target
-                  <select v-model="postImagePreset" @change="applyPostImagePreset">
-                    <option v-for="option in postImagePresetOptions" :key="option.value" :value="option.value">
-                      {{ option.label }}
-                    </option>
-                  </select>
-                </label>
-                <label v-if="postOptimizeIsImage">
-                  Image quality
-                  <input type="number" min="1" max="100" step="1" v-model.number="postImageQuality" @input="markPostOptimizeCustom" />
-                </label>
-                <label v-if="postOptimizeIsVideo">
-                  Video target
-                  <select v-model="postVideoPreset" @change="applyPostVideoPreset">
-                    <option v-for="option in postVideoPresetOptions" :key="option.value" :value="option.value">
-                      {{ option.label }}
-                    </option>
-                  </select>
-                </label>
-                <label v-if="postOptimizeIsVideo">
-                  Video quality budget
-                  <select v-model="postVideoBitratePreset" @change="applyPostVideoBitratePreset">
-                    <option v-for="option in postVideoBitratePresetOptions" :key="option.value" :value="option.value">
-                      {{ option.label }}
-                    </option>
-                  </select>
-                </label>
-                <label v-if="postOptimizeIsImage && postImagePreset === 'custom'">
-                  Custom image max side
-                  <input type="number" min="64" max="8192" step="16" v-model.number="postImageMaxDimension" @input="markPostOptimizeCustom" />
-                </label>
-                <label v-if="postOptimizeIsVideo && postVideoPreset === 'custom'">
-                  Custom video max side
-                  <input type="number" min="64" max="8192" step="16" v-model.number="postVideoMaxDimension" @input="markPostOptimizeCustom" />
-                </label>
-                <label v-if="postOptimizeIsVideo && postVideoBitratePreset === 'custom'">
-                  Custom video budget (kbps)
-                  <input type="number" min="64" max="50000" step="64" v-model.number="postVideoBitrateKbps" @input="markPostOptimizeCustom" />
-                </label>
-              </div>
-            </details>
-
-            <div class="optimize-guardrail">
-              <span class="optimize-guardrail-icon" aria-hidden="true">✓</span>
-              <div>
-                <strong>Quality and replacement guardrails</strong>
-                <small>
-                  <template v-if="postOptimizeIsSocial">
-                    Social mode preserves accepted source dimensions, creates an H.264/AAC MP4, and may increase
-                    file size to avoid visible generational loss. X account duration and file-size limits still apply.
-                  </template>
-                  <template v-else>
-                    Motion can burst above the selected video budget. The original is replaced only after a valid,
-                    smaller output passes media inspection and duplicate checks.
-                  </template>
-                </small>
-              </div>
-            </div>
-
-            <div
-              v-if="optimizePreview"
-              class="optimize-review-card"
-              :class="{ growth: optimizePreviewSavings.increaseBytes > 0 }"
-            >
-              <div class="optimize-review-head">
-                <div>
-                  <span>Preview assessment</span>
-                  <strong>{{ optimizePreviewAssessment }}</strong>
-                </div>
-                <span class="optimize-ready-pill">{{ optimizePreviewCanApply ? 'Ready to set' : 'Current retained' }}</span>
-              </div>
-              <div class="optimize-review-metrics">
-                <div>
-                  <span>Original</span>
-                  <strong>{{ formatFileSize(optimizePreviewSavings.before) }}</strong>
-                </div>
-                <div>
-                  <span>{{ optimizePreviewCanApply ? 'Optimized' : 'Reviewed' }}</span>
-                  <strong>{{ formatFileSize(optimizePreviewSavings.after) }}</strong>
-                </div>
-                <div>
-                  <span>{{ optimizePreviewStorageLabel }}</span>
-                  <strong>{{ formatFileSize(optimizePreviewStorageBytes) }}</strong>
-                </div>
-              </div>
-              <small>{{ optimizePreviewDimensionSummary }}</small>
-              <small v-if="optimizePreviewGrowthExplanation" class="optimize-growth-explanation">
-                {{ optimizePreviewGrowthExplanation }}
-              </small>
-            </div>
-
-            <div v-if="showOptimizeJobCard" class="optimize-job-card" :class="{ error: optimizeStatusKind === 'error' }">
-              <div class="optimize-job-head">
-                <div>
-                  <strong>{{ optimizeBusy ? 'Optimization job running' : 'Optimization job' }}</strong>
-                  <small>{{ optimizeStatus || optimizeJob.message }}</small>
-                </div>
-                <span>{{ optimizeJobProgress }}%</span>
-              </div>
-              <div class="post-optimize-progress" role="progressbar" :aria-valuenow="optimizeJobProgress" aria-valuemin="0" aria-valuemax="100">
-                <div class="post-optimize-progress-fill" :style="{ width: optimizeJobProgress + '%' }"></div>
-              </div>
-            </div>
-
-            <div class="optimize-action-bar">
-              <button
-                type="button"
-                class="btn"
-                :disabled="optimizeBusy"
-                @click="openOrCreateOptimizePreview"
-              >
-                {{ optimizeBusy ? 'Processing...' : 'Preview' }}
-              </button>
-              <button
-                type="button"
-                class="btn btn-danger"
-                :disabled="optimizeBusy || !optimizePreviewCanApply"
-                :title="optimizePreviewCanApply ? 'Set the exact reviewed file as the stored original' : 'Preview a valid result before setting it'"
-                @click="requestSetOptimizePreview"
-              >
-                Set
-              </button>
-            </div>
-
-            <small v-if="optimizeStatus && !optimizeJob" class="post-optimize-status" :class="{ error: optimizeStatusKind === 'error' }">
-              {{ optimizeStatus }}
-            </small>
-          </div>
-        </details>
         <button
           class="btn"
           :class="{ 'btn-danger': post.isFavorited }"
@@ -505,6 +212,376 @@
           Delete
         </button>
       </div>
+
+      <!-- Per-post tools, one tab each, below the post actions. -->
+      <section class="sidebar-section post-tools">
+        <div class="post-tools-tabs" role="tablist" aria-label="Post tools">
+          <button
+            v-for="tab in postToolTabs"
+            :key="tab.id"
+            type="button"
+            role="tab"
+            class="post-tools-tab"
+            :class="{ active: activePostToolTab === tab.id }"
+            :aria-selected="activePostToolTab === tab.id"
+            @click="selectPostToolTab(tab.id)"
+          >
+            {{ tab.label }}
+            <span v-if="tab.busy" class="post-tools-busy" aria-label="working"></span>
+          </button>
+        </div>
+
+        <div v-if="autoTagControlsVisible" v-show="activePostToolTab === 'ai'" class="post-tools-panel" role="tabpanel">
+          <div class="ai-profile-actions" aria-label="AI tag preview profiles">
+            <button
+              v-for="profile in autoTagProfiles"
+              :key="profile.id"
+              type="button"
+              class="btn btn-secondary ai-profile-btn"
+              :class="{ active: activeAutoTagProfile === profile.id }"
+              :disabled="autoTagLoading"
+              :data-tooltip="profile.tooltip"
+              @click="previewAutoTags(profile.id)"
+            >
+              {{ autoTagLoading && activeAutoTagProfile === profile.id ? 'Running...' : profile.label }}
+            </button>
+          </div>
+          <!-- Outside the model picker: it enriches whatever the models found, and
+               a control that changes the result should not sit behind a details. -->
+          <label class="booru-lookup-row">
+            <input type="checkbox" v-model="postAutoTagSettings.booruLookupEnabled" />
+            <span>
+              <strong>Look up character series on Danbooru</strong>
+              <small>Adds the series for recognised characters. Only adds tags; never replaces model output.</small>
+            </span>
+          </label>
+          <div v-if="mediaType === 'video'" class="frame-picker">
+            <span class="frame-picker-label">{{ framePickerLabel }}</span>
+            <button type="button" class="btn btn-secondary frame-picker-btn" @click="pinCurrentFrame">
+              Analyse this frame
+            </button>
+            <button
+              type="button"
+              class="btn btn-secondary frame-picker-btn"
+              :disabled="videoFrameTime === null"
+              @click="videoFrameTime = null"
+            >Auto</button>
+          </div>
+          <div v-if="autoTagLoading" class="ai-inline-status">
+            <div class="ai-inline-status-head">
+              <strong>{{ autoTagStageTitle }}</strong>
+              <span>{{ autoTagRunElapsed }}s</span>
+            </div>
+            <div class="auto-progress compact">
+              <div class="auto-progress-fill" :style="{ width: autoTagOverallProgress + '%' }"></div>
+            </div>
+            <small>{{ autoTagStageMessage }}</small>
+          </div>
+          <details class="ai-model-picker" :open="autoModelPickerOpen" @toggle="autoModelPickerOpen = $event.target.open">
+            <summary>AI models</summary>
+            <div class="ai-model-list">
+              <label v-for="model in postModelRows" :key="model.id" class="ai-model-row">
+                <input
+                  type="checkbox"
+                  v-model="postAutoTagSettings[model.settingKey]"
+                  :disabled="!model.canToggle"
+                />
+                <span>
+                  <strong class="ai-model-name">
+                    {{ model.name }}
+                    <button
+                      type="button"
+                      class="ai-info-icon"
+                      :data-tooltip="postModelInfoTitle(model)"
+                      :aria-label="postModelInfoTitle(model)"
+                      @mouseenter="showModelTooltip($event, postModelInfoTitle(model))"
+                      @focus="showModelTooltip($event, postModelInfoTitle(model))"
+                      @mouseleave="hideModelTooltip"
+                      @blur="hideModelTooltip"
+                      @click.prevent
+                    >i</button>
+                  </strong>
+                  <small>
+                    {{ model.statusLabel }}
+                    · {{ model.loaded ? 'loaded' : 'not loaded' }}
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  class="btn btn-secondary ai-load-btn"
+                  @click.prevent="model.loaded ? unloadAutoTagWeights(model.id) : loadAutoTagWeights(model.id)"
+                  :disabled="autoTagLoading || !model.downloaded || !model.runtimeAvailable"
+                >
+                  {{ model.loaded ? 'Unload' : 'Load' }}
+                </button>
+              </label>
+            </div>
+          </details>
+        </div>
+
+        <div v-show="activePostToolTab === 'similar'" class="post-tools-panel" role="tabpanel">
+          <button class="btn btn-secondary similar-btn" @click="loadSimilar" :disabled="similarLoading">
+            {{ similarLoading ? 'Searching...' : 'Find Similar' }}
+          </button>
+          <div v-if="similarLoaded && !similar.length" class="similar-empty">
+            No visually similar posts found.
+          </div>
+          <div v-if="similar.length" class="similar-grid">
+            <router-link
+              v-for="item in similar"
+              :key="item.post.id"
+              :to="`/post/${item.post.id}`"
+              class="similar-thumb"
+              :title="`distance ${item.distance}`"
+            >
+              <img :src="item.post.thumbUrl" :alt="item.post.filename" loading="lazy" />
+            </router-link>
+          </div>
+        </div>
+
+        <div v-show="activePostToolTab === 'search'" class="post-tools-panel online-search-section" role="tabpanel">
+          <p class="online-search-intro">
+            Find where this {{ mediaType === 'video' ? 'frame' : 'image' }} came from. Each provider opens in its own tab.
+          </p>
+          <button class="btn btn-secondary online-exact-btn" @click="findExactOnlineMatches" :disabled="onlineExactLoading">
+            {{ onlineExactLoading ? 'Checking...' : 'Exact lookup (MD5)' }}
+          </button>
+          <div class="online-provider-list">
+            <button
+              v-for="provider in onlineSearchProviders"
+              :key="provider.id"
+              type="button"
+              class="online-match-row online-provider-row"
+              :class="{ unavailable: !provider.usable }"
+              :disabled="onlineSearchBusy !== ''"
+              :title="provider.usable ? `Upload this ${mediaType === 'video' ? 'frame' : 'image'} to ${provider.label}` : `${provider.label} needs the NekoBooru extension`"
+              @click="searchOnProvider(provider)"
+            >
+              <span>
+                <strong>{{ provider.label }}</strong>
+                <small>{{ onlineSearchBusy === provider.id ? 'Opening...' : provider.usable ? provider.hint : 'Needs the NekoBooru extension' }}</small>
+              </span>
+              <span aria-hidden="true">↗</span>
+            </button>
+          </div>
+          <small class="online-search-hint">
+            Exact lookup sends only an MD5 to Danbooru/Gelbooru/Sankaku. A provider gets this {{ mediaType === 'video' ? 'frame' : 'image' }} uploaded, resized if very large.
+          </small>
+          <p v-if="onlineSearchMessage" class="online-search-message" :class="onlineSearchMessageKind">
+            {{ onlineSearchMessage }}
+          </p>
+          <div v-if="onlineExactResult" class="online-exact-results">
+            <div class="online-exact-summary">
+              <strong>
+                {{ onlineExactResult.matches.length
+                  ? `${onlineExactResult.matches.length} exact match${onlineExactResult.matches.length === 1 ? '' : 'es'}`
+                  : 'No byte-exact matches' }}
+              </strong>
+              <code>{{ onlineExactResult.md5 }}</code>
+            </div>
+            <a
+              v-for="match in onlineExactResult.matches"
+              :key="`${match.provider}-${match.id}`"
+              class="online-match-row"
+              :href="match.postUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span>
+                <strong>{{ match.providerLabel }} #{{ match.id }}</strong>
+                <small>{{ match.width && match.height ? `${match.width} × ${match.height}` : 'Dimensions unknown' }}{{ match.rating ? ` · ${match.rating}` : '' }}</small>
+              </span>
+              <span aria-hidden="true">↗</span>
+            </a>
+            <small v-if="onlineExactUnavailableProviders.length" class="online-provider-warning">
+              Unavailable: {{ onlineExactUnavailableProviders.join(', ') }}. Try again later or use visual search.
+            </small>
+            <small v-else-if="!onlineExactResult.matches.length">
+              Resizing or recompression changes the MD5; use Quick Lens or Full stack next.
+            </small>
+          </div>
+        </div>
+
+        <div v-show="activePostToolTab === 'optimize'" class="post-tools-panel" role="tabpanel">
+          <div class="post-optimize-menu">
+            <div class="post-optimize-summary">
+              <span>
+                <strong>Media Optimizer</strong>
+                <small>Quality-controlled, review-first replacement</small>
+              </span>
+              <span class="optimize-state-badge" :class="postOptimizeState">
+                {{ postOptimizeStateLabel }}
+              </span>
+            </div>
+
+            <div class="post-optimize-body">
+              <section class="optimize-section">
+                <div class="optimize-section-head">
+                  <div>
+                    <strong>Optimization profile</strong>
+                    <small>{{ postOptimizeProfileName }} settings</small>
+                  </div>
+                  <span v-if="postOptimizeProfile === 'custom'" class="optimize-custom-badge">Custom</span>
+                </div>
+                <MediaOptimizeProfiles
+                  :profiles="mediaOptimizeProfiles"
+                  :active-profile="postOptimizeProfile"
+                  compact
+                  @select="applyPostOptimizeProfile"
+                />
+              </section>
+
+              <div class="optimize-context-grid">
+                <div class="optimize-context-card">
+                  <span>Source</span>
+                  <strong>{{ postOptimizeSourceResolution }}</strong>
+                  <small>{{ formatFileSize(post.fileSize) }}{{ postOptimizeIsVideo && postCurrentVideoBitrate ? ` · ~${postCurrentVideoBitrate.toLocaleString()} kbps` : '' }}</small>
+                </div>
+                <div class="optimize-context-card target">
+                  <span>Target policy</span>
+                  <strong>{{ postOptimizeTargetResolution }}</strong>
+                  <small>{{ postOptimizeTargetDetail }}</small>
+                </div>
+              </div>
+
+              <details class="optimize-advanced">
+                <summary>
+                  <span>Advanced controls</span>
+                  <small>Fine-tune dimensions and quality budgets</small>
+                </summary>
+                <div class="post-optimize-grid">
+                  <label v-if="postOptimizeIsImage">
+                    Image target
+                    <select v-model="postImagePreset" @change="applyPostImagePreset">
+                      <option v-for="option in postImagePresetOptions" :key="option.value" :value="option.value">
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label v-if="postOptimizeIsImage">
+                    Image quality
+                    <input type="number" min="1" max="100" step="1" v-model.number="postImageQuality" @input="markPostOptimizeCustom" />
+                  </label>
+                  <label v-if="postOptimizeIsVideo">
+                    Video target
+                    <select v-model="postVideoPreset" @change="applyPostVideoPreset">
+                      <option v-for="option in postVideoPresetOptions" :key="option.value" :value="option.value">
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label v-if="postOptimizeIsVideo">
+                    Video quality budget
+                    <select v-model="postVideoBitratePreset" @change="applyPostVideoBitratePreset">
+                      <option v-for="option in postVideoBitratePresetOptions" :key="option.value" :value="option.value">
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label v-if="postOptimizeIsImage && postImagePreset === 'custom'">
+                    Custom image max side
+                    <input type="number" min="64" max="8192" step="16" v-model.number="postImageMaxDimension" @input="markPostOptimizeCustom" />
+                  </label>
+                  <label v-if="postOptimizeIsVideo && postVideoPreset === 'custom'">
+                    Custom video max side
+                    <input type="number" min="64" max="8192" step="16" v-model.number="postVideoMaxDimension" @input="markPostOptimizeCustom" />
+                  </label>
+                  <label v-if="postOptimizeIsVideo && postVideoBitratePreset === 'custom'">
+                    Custom video budget (kbps)
+                    <input type="number" min="64" max="50000" step="64" v-model.number="postVideoBitrateKbps" @input="markPostOptimizeCustom" />
+                  </label>
+                </div>
+              </details>
+
+              <div class="optimize-guardrail">
+                <span class="optimize-guardrail-icon" aria-hidden="true">✓</span>
+                <div>
+                  <strong>Quality and replacement guardrails</strong>
+                  <small>
+                    <template v-if="postOptimizeIsSocial">
+                      Social mode preserves accepted source dimensions, creates an H.264/AAC MP4, and may increase
+                      file size to avoid visible generational loss. X account duration and file-size limits still apply.
+                    </template>
+                    <template v-else>
+                      Motion can burst above the selected video budget. The original is replaced only after a valid,
+                      smaller output passes media inspection and duplicate checks.
+                    </template>
+                  </small>
+                </div>
+              </div>
+
+              <div
+                v-if="optimizePreview"
+                class="optimize-review-card"
+                :class="{ growth: optimizePreviewSavings.increaseBytes > 0 }"
+              >
+                <div class="optimize-review-head">
+                  <div>
+                    <span>Preview assessment</span>
+                    <strong>{{ optimizePreviewAssessment }}</strong>
+                  </div>
+                  <span class="optimize-ready-pill">{{ optimizePreviewCanApply ? 'Ready to set' : 'Current retained' }}</span>
+                </div>
+                <div class="optimize-review-metrics">
+                  <div>
+                    <span>Original</span>
+                    <strong>{{ formatFileSize(optimizePreviewSavings.before) }}</strong>
+                  </div>
+                  <div>
+                    <span>{{ optimizePreviewCanApply ? 'Optimized' : 'Reviewed' }}</span>
+                    <strong>{{ formatFileSize(optimizePreviewSavings.after) }}</strong>
+                  </div>
+                  <div>
+                    <span>{{ optimizePreviewStorageLabel }}</span>
+                    <strong>{{ formatFileSize(optimizePreviewStorageBytes) }}</strong>
+                  </div>
+                </div>
+                <small>{{ optimizePreviewDimensionSummary }}</small>
+                <small v-if="optimizePreviewGrowthExplanation" class="optimize-growth-explanation">
+                  {{ optimizePreviewGrowthExplanation }}
+                </small>
+              </div>
+
+              <div v-if="showOptimizeJobCard" class="optimize-job-card" :class="{ error: optimizeStatusKind === 'error' }">
+                <div class="optimize-job-head">
+                  <div>
+                    <strong>{{ optimizeBusy ? 'Optimization job running' : 'Optimization job' }}</strong>
+                    <small>{{ optimizeStatus || optimizeJob.message }}</small>
+                  </div>
+                  <span>{{ optimizeJobProgress }}%</span>
+                </div>
+                <div class="post-optimize-progress" role="progressbar" :aria-valuenow="optimizeJobProgress" aria-valuemin="0" aria-valuemax="100">
+                  <div class="post-optimize-progress-fill" :style="{ width: optimizeJobProgress + '%' }"></div>
+                </div>
+              </div>
+
+              <div class="optimize-action-bar">
+                <button
+                  type="button"
+                  class="btn"
+                  :disabled="optimizeBusy"
+                  @click="openOrCreateOptimizePreview"
+                >
+                  {{ optimizeBusy ? 'Processing...' : 'Preview' }}
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-danger"
+                  :disabled="optimizeBusy || !optimizePreviewCanApply"
+                  :title="optimizePreviewCanApply ? 'Set the exact reviewed file as the stored original' : 'Preview a valid result before setting it'"
+                  @click="requestSetOptimizePreview"
+                >
+                  Set
+                </button>
+              </div>
+
+              <small v-if="optimizeStatus && !optimizeJob" class="post-optimize-status" :class="{ error: optimizeStatusKind === 'error' }">
+                {{ optimizeStatus }}
+              </small>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <CommentSection :post-id="post.id" />
     </aside>
@@ -839,7 +916,11 @@ import {
   mediaOptimizeSavings,
 } from '../utils/mediaOptimize'
 import {
+  SEARCH_PROVIDERS,
+  blobToDataUrl,
+  detectExtension,
   openSearchTarget,
+  prepareSearchImage,
   requestExtensionReverseSearch,
   submitSearchFile,
 } from '../utils/onlineImageSearch'
@@ -862,6 +943,14 @@ const onlineExactResult = ref(null)
 const onlineSearchBusy = ref('')
 const onlineSearchMessage = ref('')
 const onlineSearchMessageKind = ref('success')
+const extensionAvailable = ref(false)
+// Short tag lists stay inline; only longer ones get their own scroll box.
+const TAG_SCROLL_THRESHOLD = 12
+const tagListScrolls = computed(() => (post.value?.tagDetails || post.value?.tags || []).length > TAG_SCROLL_THRESHOLD)
+const onlineSearchProviders = computed(() => SEARCH_PROVIDERS.map((provider) => ({
+  ...provider,
+  usable: extensionAvailable.value || provider.direct,
+})))
 const postAiAnalyses = ref([])
 const editingAiAnalysisId = ref(null)
 const aiAnalysisDescriptionDraft = ref('')
@@ -1309,12 +1398,67 @@ const postModelRows = computed(() => {
 })
 const autoTagControlsVisible = computed(() => autoTagStatus.value?.enabled !== false || autoTagStatus.value?.models?.length)
 
+const postToolTabs = computed(() => [
+  ...(autoTagControlsVisible.value ? [{ id: 'ai', label: 'AI Tags', busy: autoTagLoading.value }] : []),
+  { id: 'similar', label: 'Similar', busy: similarLoading.value },
+  { id: 'search', label: 'Search', busy: onlineExactLoading.value || onlineSearchBusy.value !== '' },
+  { id: 'optimize', label: 'Optimize', busy: optimizeBusy.value },
+])
+const POST_LAYOUT_KEY = 'nekobooru.postLayout'
+const savedPostLayout = readPostLayout()
+const wideFrame = ref(savedPostLayout.wideFrame === true)
+const sidebarHidden = ref(savedPostLayout.sidebarHidden === true)
+
+function readPostLayout() {
+  try {
+    return JSON.parse(localStorage.getItem(POST_LAYOUT_KEY) || '{}') || {}
+  } catch {
+    return {}
+  }
+}
+
+function savePostLayout() {
+  try {
+    localStorage.setItem(POST_LAYOUT_KEY, JSON.stringify({
+      wideFrame: wideFrame.value,
+      sidebarHidden: sidebarHidden.value,
+    }))
+  } catch {
+    // localStorage unavailable
+  }
+}
+
+function toggleWideFrame() {
+  wideFrame.value = !wideFrame.value
+  savePostLayout()
+}
+
+function toggleSidebarHidden() {
+  sidebarHidden.value = !sidebarHidden.value
+  savePostLayout()
+}
+
+// Opens on Similar each time the post page loads.
+const postToolTab = ref('similar')
+const activePostToolTab = computed(() =>
+  postToolTabs.value.some((tab) => tab.id === postToolTab.value) ? postToolTab.value : 'similar'
+)
+
+function selectPostToolTab(id) {
+  postToolTab.value = id
+}
+
 onMounted(async () => {
   await loadPost()
   loadNeighbors()
   window.addEventListener('keydown', onKeydown)
   loadPools()
   loadAutoTagControls()
+  refreshExtensionAvailable()
+})
+
+watch(activePostToolTab, (tab) => {
+  if (tab === 'search') refreshExtensionAvailable()
 })
 
 onUnmounted(() => {
@@ -1379,7 +1523,7 @@ function setOnlineSearchMessage(message, kind = 'success') {
 async function findExactOnlineMatches() {
   if (!post.value?.id || onlineExactLoading.value) return
   onlineExactLoading.value = true
-  setOnlineSearchMessage('Checking exact MD5 matches on Danbooru and Gelbooru...')
+  setOnlineSearchMessage('Checking exact MD5 matches on Danbooru, Gelbooru, and Sankaku...')
   try {
     onlineExactResult.value = await api.getPostOnlineMatches(post.value.id)
     const count = onlineExactResult.value.matches?.length || 0
@@ -1394,7 +1538,7 @@ async function findExactOnlineMatches() {
   }
 }
 
-async function fileForQuickVisualSearch() {
+async function fileForVisualSearch() {
   if (mediaType.value === 'video') {
     const frame = await mediaViewer.value?.captureCurrentFrame?.()
     if (!frame) throw new Error('The current video frame is not ready yet.')
@@ -1410,39 +1554,49 @@ async function fileForQuickVisualSearch() {
   })
 }
 
-async function quickLensSearch() {
-  if (!post.value || onlineSearchBusy.value) return
-  let searchTarget = null
-  onlineSearchBusy.value = 'lens'
-  setOnlineSearchMessage('Preparing one Google Lens search tab...')
-  try {
-    // Open synchronously while the click still owns popup permission; media
-    // preparation can safely continue afterwards without being blocked.
-    searchTarget = openSearchTarget('google')
-    const file = await fileForQuickVisualSearch()
-    submitSearchFile('google', searchTarget.targetName, file)
-    setOnlineSearchMessage('Google Lens search opened.', 'success')
-  } catch (error) {
-    try { searchTarget?.targetWindow?.close() } catch { /* best effort */ }
-    setOnlineSearchMessage('Quick visual search failed: ' + error.message, 'error')
-  } finally {
-    onlineSearchBusy.value = ''
-  }
+async function refreshExtensionAvailable() {
+  if (!extensionAvailable.value) extensionAvailable.value = await detectExtension()
+  return extensionAvailable.value
 }
 
-async function fullReverseSearch() {
+async function searchOnProvider(provider) {
   if (!post.value || onlineSearchBusy.value) return
-  onlineSearchBusy.value = 'full'
-  setOnlineSearchMessage('Asking the NekoBooru extension to open the full reverse-search stack...')
+  // Ask again on the click: the extension may have been reloaded since the page opened.
+  if (!provider.usable && !await refreshExtensionAvailable()) {
+    setOnlineSearchMessage(
+      `${provider.label} needs the NekoBooru extension, and it is not answering on this page. ` +
+        'Reload the extension on the extensions page, then refresh this page (reloading it does not reach tabs that were already open).',
+      'error',
+    )
+    return
+  }
+  // Prefer the extension: it opens the tab itself and can fill TinEye and
+  // trace.moe. Without it, the tab has to open now, while the click still
+  // counts as a user gesture, or the popup blocker eats it.
+  const viaExtension = extensionAvailable.value
+  let searchTarget = null
+  onlineSearchBusy.value = provider.id
+  setOnlineSearchMessage(`Preparing the ${mediaType.value === 'video' ? 'frame' : 'image'} for ${provider.label}...`, 'neutral')
   try {
-    await requestExtensionReverseSearch({
-      mediaUrl: new URL(post.value.contentUrl, window.location.href).href,
-      mediaType: mediaType.value,
-      filename: post.value.filename,
-    })
-    setOnlineSearchMessage('Full reverse-search stack started in new tabs.', 'success')
+    if (!viaExtension) searchTarget = openSearchTarget(provider.id)
+    const file = await prepareSearchImage(await fileForVisualSearch())
+    if (viaExtension) {
+      // The page sends the bytes: media URLs need this login, which the
+      // extension's own fetch does not have.
+      await requestExtensionReverseSearch({
+        mode: provider.id,
+        mediaUrl: new URL(post.value.contentUrl, window.location.href).href,
+        mediaType: 'image',
+        filename: file.name,
+        dataUrl: await blobToDataUrl(file),
+      }, { timeoutMs: 15000 })
+    } else {
+      submitSearchFile(provider.id, searchTarget.targetName, file)
+    }
+    setOnlineSearchMessage(`${provider.label} opened in a new tab.`, 'success')
   } catch (error) {
-    setOnlineSearchMessage(error.message, 'error')
+    try { searchTarget?.targetWindow?.close() } catch { /* best effort */ }
+    setOnlineSearchMessage(`${provider.label} search failed: ${error.message}`, 'error')
   } finally {
     onlineSearchBusy.value = ''
   }
@@ -2655,6 +2809,31 @@ function formatDate(dateStr) {
   return new Date(dateStr).toLocaleDateString()
 }
 
+function formatFullDate(dateStr) {
+  const date = new Date(dateStr)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+// "2h ago" for recent uploads; older ones fall back to the short date.
+function formatRelativeDate(dateStr) {
+  const date = new Date(dateStr)
+  if (Number.isNaN(date.getTime())) return ''
+  const seconds = Math.round((Date.now() - date.getTime()) / 1000)
+  if (seconds < 60) return 'just now'
+  const steps = [
+    [60, 'm'],
+    [24, 'h'],
+    [7, 'd'],
+  ]
+  let value = seconds / 60
+  for (const [limit, unit] of steps) {
+    if (value < limit) return `${Math.floor(value)}${unit} ago`
+    value /= limit
+  }
+  return date.toLocaleDateString(undefined, { dateStyle: 'medium' })
+}
+
 function tweetIdFromPost(value) {
   if (!value) return ''
   const tag = (value.tags || []).find((name) => /^twitter_\d+$/.test(name) || /^tweet_\d+$/.test(name))
@@ -2695,6 +2874,10 @@ const BOORU_SOURCE_HOSTS = [
       'realbooru.com',
       'hypnohub.net',
     ].includes(host),
+  },
+  {
+    label: 'Sankaku',
+    matches: (host) => ['sankaku.app', 'chan.sankakucomplex.com', 'sankakucomplex.com'].includes(host),
   },
 ]
 
@@ -2755,6 +2938,10 @@ function booruSourceLinkFromPost(value) {
   cursor: pointer;
   opacity: 0.55;
   transition: opacity 0.15s, background 0.15s;
+  /* The arrow is a text glyph; keep it from being selected or showing a text caret. */
+  user-select: none;
+  -webkit-user-select: none;
+  caret-color: transparent;
 }
 
 .nav-arrow:hover {
@@ -2789,6 +2976,89 @@ function booruSourceLinkFromPost(value) {
   border: 1px solid var(--border);
 }
 
+/* Layout toggles in the viewer's control pill. */
+.layout-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-peek {
+  display: none;
+}
+
+@media (min-width: 769px) {
+  .post-view {
+    position: relative;
+  }
+
+  /* Hidden sidebar: the frame takes almost the whole row. A slim gutter of its
+     own sits beside it (never over it, so the next arrow and the close button
+     stay clickable), and hovering that gutter floats the sidebar in. */
+  .post-view.sidebar-hidden {
+    grid-template-columns: minmax(0, 1fr) 56px;
+    gap: 0.5rem;
+  }
+
+  .post-view.sidebar-hidden .post-sidebar {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: 360px;
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
+    opacity: 0;
+    transform: translateX(16px);
+    pointer-events: none;
+    transition: opacity 0.18s ease 0.25s, transform 0.18s ease 0.25s;
+  }
+
+  .post-view.sidebar-hidden .sidebar-peek:hover + .post-sidebar,
+  .post-view.sidebar-hidden .post-sidebar:hover,
+  .post-view.sidebar-hidden .post-sidebar:focus-within {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+    transition-delay: 0s;
+  }
+
+  .sidebar-peek {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    border: 1px solid transparent;
+    border-radius: 0.75rem;
+    cursor: w-resize;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .sidebar-peek:hover {
+    background: var(--bg-secondary);
+    border-color: var(--border);
+  }
+
+  .sidebar-peek span {
+    width: 4px;
+    height: 64px;
+    border-radius: 999px;
+    background: var(--accent);
+    opacity: 0.4;
+    transition: opacity 0.15s;
+  }
+
+  .sidebar-peek:hover span {
+    opacity: 0.85;
+  }
+}
+
+@media (max-width: 768px) {
+  .layout-toggle {
+    display: none;
+  }
+}
+
 .sidebar-section h3 {
   font-size: 0.75rem;
   color: var(--accent);
@@ -2798,30 +3068,104 @@ function booruSourceLinkFromPost(value) {
   font-weight: 600;
 }
 
-.info-list {
+.post-info {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.5rem 1rem;
-  font-size: 0.875rem;
+  gap: 0.6rem;
 }
 
-.info-list dt {
-  color: var(--text-secondary);
+.post-info-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
-.info-list dd {
-  color: var(--text-primary);
-  font-weight: 500;
+.post-info-id {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
 }
 
-.external-link {
-  color: var(--accent);
-  text-decoration: none;
+.post-info-id strong {
+  font-size: 1.15rem;
   font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
 }
 
-.external-link:hover {
-  text-decoration: underline;
+.post-info-type {
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.post-info-date {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.post-info-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: -0.3rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.post-info-dot {
+  opacity: 0.6;
+}
+
+.post-info-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.post-info-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.post-info-chip-logo {
+  width: 0.8rem;
+  height: 0.8rem;
+  color: var(--text-primary);
+}
+
+.post-info-chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.post-info-rating {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.post-info-rating > span {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
 }
 
 .safety-buttons {
@@ -2860,9 +3204,106 @@ function booruSourceLinkFromPost(value) {
   background: #f87171;
 }
 
+/* Long tag lists scroll inside their own box instead of stretching the sidebar. */
+.tag-scroll-box {
+  max-height: min(22rem, 45vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--bg-primary);
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) transparent;
+}
+
+.tag-scroll-box::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tag-scroll-box::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.tag-scroll-box::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .edit-tags-btn {
   margin-top: 0.75rem;
   width: 100%;
+}
+
+.post-tools {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--bg-primary);
+  overflow: hidden;
+  /* The sidebar is a scrolling flex column; without this the clipped box shrinks to nothing. */
+  flex-shrink: 0;
+}
+
+.post-tools-tabs {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 0.25rem;
+  padding: 0.3rem;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+.post-tools-tab {
+  position: relative;
+  min-width: 0;
+  padding: 0.45rem 0.25rem;
+  border: none;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.post-tools-tab:hover {
+  color: var(--text-primary);
+}
+
+.post-tools-tab.active {
+  background: var(--bg-secondary);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.post-tools-busy {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.3rem;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: post-tools-pulse 1s ease-in-out infinite;
+}
+
+@keyframes post-tools-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.post-tools-panel {
+  padding: 0.85rem;
+}
+
+.post-tools-panel > :first-child {
+  margin-top: 0;
 }
 
 .similar-btn {
@@ -2903,18 +3344,34 @@ function booruSourceLinkFromPost(value) {
   line-height: 1.4;
 }
 
-.online-search-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.4rem;
+.online-exact-btn {
+  width: 100%;
 }
 
-.online-search-actions .btn {
-  min-width: 0;
-  padding: 0.55rem 0.35rem;
-  font-size: 0.76rem;
-  line-height: 1.2;
-  white-space: normal;
+.online-provider-list {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.online-provider-row {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.online-provider-row:disabled,
+.online-provider-row.unavailable {
+  opacity: 0.55;
+}
+
+.online-provider-row:disabled {
+  cursor: default;
+}
+
+.online-provider-row:disabled:hover {
+  border-color: var(--border);
 }
 
 .online-search-hint,
@@ -3437,21 +3894,18 @@ function booruSourceLinkFromPost(value) {
   gap: 0.5rem;
 }
 
+/* Sits inside the Optimize tab, whose panel already draws the frame. */
 .post-optimize-menu {
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  background: linear-gradient(180deg, var(--bg-primary), var(--bg-tertiary));
-  overflow: hidden;
+  min-width: 0;
 }
 
 .post-optimize-summary {
-  cursor: pointer;
   list-style: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.85rem;
+  padding: 0 0 0.75rem;
   color: var(--text-primary);
 }
 
@@ -3511,7 +3965,7 @@ function booruSourceLinkFromPost(value) {
 .post-optimize-body {
   display: grid;
   gap: 0.75rem;
-  padding: 0 0.85rem 0.85rem;
+  padding-top: 0.75rem;
   border-top: 1px solid var(--border);
 }
 
@@ -4547,10 +5001,6 @@ function booruSourceLinkFromPost(value) {
     margin-bottom: 0.5rem;
   }
 
-  .info-list {
-    font-size: 0.8rem;
-    gap: 0.35rem 0.75rem;
-  }
 
   .safety-btn {
     width: 28px;

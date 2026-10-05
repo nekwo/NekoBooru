@@ -1,9 +1,38 @@
+// Visual search providers, one tab each. `direct` ones accept a plain form
+// upload, so the page can post to them itself when the extension is missing;
+// Google Lens (whose upload endpoint now refuses plain posts with 403), TinEye
+// and trace.moe need the extension to drop the image into their own pages.
+export const SEARCH_PROVIDERS = [
+  { id: 'saucenao', label: 'SauceNAO', hint: 'Artwork, booru and pixiv sources', direct: true },
+  { id: 'iqdb', label: 'IQDB', hint: 'Anime booru mirrors', direct: true },
+  { id: 'google', label: 'Google Lens', hint: 'The wider web', direct: false },
+  { id: 'tineye', label: 'TinEye', hint: 'Exact and edited copies', direct: false },
+  { id: 'trace', label: 'trace.moe', hint: 'Anime scene, episode and timestamp', direct: false },
+]
+
 const PROVIDERS = {
   google: {
     action: 'https://lens.google.com/v3/upload',
     fileField: 'encoded_image',
   },
+  saucenao: {
+    action: 'https://saucenao.com/search.php',
+    fileField: 'file',
+  },
+  iqdb: {
+    action: 'https://iqdb.org/',
+    fileField: 'file',
+    hiddenFields: [
+      ['MAX_FILE_SIZE', '8388608'],
+      ...['1', '2', '3', '4', '5', '6', '11', '13'].map((id) => ['service[]', id]),
+    ],
+  },
 }
+
+// IQDB refuses anything over 8 MB and the others gain nothing from a
+// 30-megapixel original, so big images go up as a resized JPEG.
+const SEARCH_IMAGE_MAX_SIDE = 2048
+const SEARCH_IMAGE_MAX_BYTES = 7.5 * 1024 * 1024
 
 function searchTargetName(providerId) {
   return `nekobooru-${providerId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -42,6 +71,13 @@ export function submitSearchFile(providerId, targetName, file, documentRef = doc
   transfer.items.add(file instanceof File ? file : new File([file], 'nekobooru-search.png', { type: file.type || 'image/png' }))
   input.files = transfer.files
   form.appendChild(input)
+  for (const [name, value] of provider.hiddenFields || []) {
+    const hidden = documentRef.createElement('input')
+    hidden.type = 'hidden'
+    hidden.name = name
+    hidden.value = value
+    form.appendChild(hidden)
+  }
   documentRef.body.appendChild(form)
   form.submit()
   form.remove()
@@ -76,5 +112,61 @@ export function requestExtensionReverseSearch(payload, options = {}) {
       mode: 'all',
       ...payload,
     }, windowRef.location.origin)
+  })
+}
+
+// Resolves true when the extension's content script answers on this page.
+export function detectExtension(options = {}) {
+  const windowRef = options.windowRef || window
+  const timeoutMs = options.timeoutMs || 600
+  const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      windowRef.removeEventListener('message', onMessage)
+      resolve(false)
+    }, timeoutMs)
+
+    function onMessage(event) {
+      if (event.source !== windowRef || event.origin !== windowRef.location.origin) return
+      if (event.data?.type !== 'nekobooru-extension-pong' || event.data.requestId !== requestId) return
+      clearTimeout(timeout)
+      windowRef.removeEventListener('message', onMessage)
+      resolve(event.data.reverseSearch === true)
+    }
+
+    windowRef.addEventListener('message', onMessage)
+    windowRef.postMessage({ type: 'nekobooru-extension-ping', source: 'nekobooru-app', requestId }, windowRef.location.origin)
+  })
+}
+
+export async function prepareSearchImage(file) {
+  let bitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    return file
+  }
+  try {
+    const scale = Math.min(1, SEARCH_IMAGE_MAX_SIDE / Math.max(bitmap.width, bitmap.height))
+    if (scale === 1 && file.size <= SEARCH_IMAGE_MAX_BYTES) return file
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92))
+    if (!blob) return file
+    const name = (file.name || 'nekobooru-search').replace(/\.[^.]+$/, '')
+    return new File([blob], `${name}.jpg`, { type: 'image/jpeg' })
+  } finally {
+    bitmap.close?.()
+  }
+}
+
+export function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = () => reject(reader.error || new Error('Could not read the image.'))
+    reader.readAsDataURL(blob)
   })
 }

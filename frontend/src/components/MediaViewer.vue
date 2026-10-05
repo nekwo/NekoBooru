@@ -6,7 +6,7 @@
     @mousedown="onMouseDown"
     @mousemove="onMouseMove"
     @mouseup="onMouseUp"
-    @mouseleave="onMouseUp"
+    @mouseleave="onMouseLeave"
     @touchstart="onTouchStart"
     @touchmove.prevent="onTouchMove"
     @touchend="onTouchEnd"
@@ -48,7 +48,7 @@
       <span>×</span>
     </button>
 
-    <div class="controls" v-if="!error && !loading">
+    <div class="controls" :class="{ visible: controlsVisible }" v-if="!error && !loading">
       <button @click="zoomOut" title="Zoom out">-</button>
       <span class="zoom-level">{{ Math.round(scale * 100) }}%</span>
       <button @click="zoomIn" title="Zoom in">+</button>
@@ -58,6 +58,8 @@
       <button v-if="isVideo" @click="downloadAsGif" :disabled="convertingGif" title="Download as GIF">
         {{ convertingGif ? '…' : 'GIF' }}
       </button>
+      <!-- Extra page-level buttons, e.g. the post page's layout toggles. -->
+      <slot name="controls" />
     </div>
   </div>
 </template>
@@ -97,6 +99,14 @@ const mediaSize = ref({ width: 0, height: 0 })
 const loading = ref(true)
 const error = ref(false)
 const convertingGif = ref(false)
+// True while the view is "fit to screen", so a resized frame refits instead of
+// leaving the media at the old size. Any manual zoom or pan clears it.
+const autoFit = ref(true)
+// The control pill shows only while the pointer is in a centre column of the
+// viewer (or on the pill itself), not anywhere over the media.
+const controlsVisible = ref(false)
+const CONTROLS_BAND_MIN_HALF_WIDTH = 220
+let resizeObserver = null
 
 // Touch handling state
 const touchState = ref({
@@ -148,6 +158,7 @@ function onWheel(e) {
   const delta = e.deltaY > 0 ? -0.1 : 0.1
   const newScale = Math.max(0.1, Math.min(10, scale.value + delta))
   scale.value = newScale
+  autoFit.value = false
 }
 
 function onMouseDown(e) {
@@ -159,8 +170,22 @@ function onMouseDown(e) {
   }
 }
 
+function updateControlsVisible(e) {
+  const rect = containerRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const halfWidth = Math.max(CONTROLS_BAND_MIN_HALF_WIDTH, rect.width * 0.12)
+  controlsVisible.value = Math.abs(e.clientX - (rect.left + rect.width / 2)) <= halfWidth
+}
+
+function onMouseLeave() {
+  onMouseUp()
+  controlsVisible.value = false
+}
+
 function onMouseMove(e) {
+  updateControlsVisible(e)
   if (!isDragging.value) return
+  autoFit.value = false
   translateX.value = e.clientX - dragStart.value.x
   translateY.value = e.clientY - dragStart.value.y
 }
@@ -196,6 +221,7 @@ function onTouchStart(e) {
 
 function onTouchMove(e) {
   if (error.value) return
+  autoFit.value = false
 
   if (touchState.value.isPinching && e.touches.length === 2) {
     // Pinch to zoom
@@ -229,13 +255,16 @@ function onTouchEnd(e) {
 
 function zoomIn() {
   scale.value = Math.min(10, scale.value + 0.25)
+  autoFit.value = false
 }
 
 function zoomOut() {
   scale.value = Math.max(0.1, scale.value - 0.25)
+  autoFit.value = false
 }
 
 function resetZoom() {
+  autoFit.value = false
   scale.value = 1
   translateX.value = 0
   translateY.value = 0
@@ -307,6 +336,7 @@ function fitToScreen() {
   scale.value = Math.min(scaleX, scaleY, 1)
   translateX.value = 0
   translateY.value = 0
+  autoFit.value = true
 }
 
 // Reset on src change
@@ -326,10 +356,17 @@ function onKeyDown(e) {
 // Add keyboard listener
 onMountedHook(() => {
   window.addEventListener('keydown', onKeyDown)
+  if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      if (autoFit.value) fitToScreen()
+    })
+    resizeObserver.observe(containerRef.value)
+  }
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
+  resizeObserver?.disconnect()
 })
 
 defineExpose({
@@ -409,9 +446,41 @@ defineExpose({
   border-radius: 2rem;
   border: 1px solid var(--border);
   box-shadow: 0 4px 12px var(--shadow);
+  /* Out of the way until the pointer is over the media. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
 }
 
-.controls button {
+.controls.visible,
+.controls:hover,
+.controls:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Touch screens have no hover, so keep the controls showing there. */
+@media (hover: none) {
+  .controls {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.controls :slotted(button.active) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.controls :slotted(button svg) {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+}
+
+.controls button,
+.controls :slotted(button) {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   color: var(--text-primary);
@@ -420,7 +489,8 @@ defineExpose({
   font-weight: 500;
 }
 
-.controls button:hover {
+.controls button:hover,
+.controls :slotted(button:hover) {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);

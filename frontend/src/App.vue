@@ -351,6 +351,11 @@ button {
   width: 100%;
 }
 
+/* The post page's "wide frame" toggle lifts the width cap. */
+.app-main:has(.post-view.wide-frame) {
+  max-width: none;
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;
