@@ -311,14 +311,12 @@
               </select>
             </label>
           </div>
-          <label v-if="batchTagMode !== 'clear'" class="batch-textarea-label">
+          <!-- The same tag box as Edit Tags: autocomplete, and multi-word tags
+               like "call of the night" stay one tag instead of splitting on spaces. -->
+          <div v-if="batchTagMode !== 'clear'" class="batch-textarea-label">
             Tags
-            <textarea
-              v-model="batchTagText"
-              rows="3"
-              placeholder="Comma, space, or newline separated tags..."
-            ></textarea>
-          </label>
+            <TagInput v-model="batchTags" placeholder="Type a tag, then Enter or comma..." />
+          </div>
           <div class="batch-actions-row">
             <button type="button" class="btn btn-secondary" :disabled="!selectedIds.length || busy" @click="applyBatchTagUpdate">
               Apply Tag / Rating Changes
@@ -678,6 +676,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { usePostsStore } from '../stores/posts'
 import { api } from '../api/client'
 import PostGrid from '../components/PostGrid.vue'
+import TagInput from '../components/TagInput.vue'
 import Pagination from '../components/Pagination.vue'
 import MediaViewer from '../components/MediaViewer.vue'
 import MediaOptimizeProfiles from '../components/MediaOptimizeProfiles.vue'
@@ -761,7 +760,7 @@ const defaultSemanticPrompt = [
   '- Add semantic/context tags only when supported: political_edit, meme_edit, amv, music_video, captioned, protest, politician, propaganda, music, edit, has_text, text_overlay, has_speech, swastika, sonnenrad, black_sun, national_socialism, hammer_and_sickle, communism.',
 ].join('\n')
 const batchTagMode = ref('add')
-const batchTagText = ref('')
+const batchTags = ref([])
 const batchSafety = ref('')
 const BATCH_MEDIA_OPTIMIZE_KEY = MEDIA_OPTIMIZE_STORAGE_KEY
 const batchMediaOptimizeDefaults = loadBatchMediaOptimizeSettings()
@@ -1229,9 +1228,8 @@ function defaultBatchAiSettings() {
 
 function parseBatchTags() {
   const seen = new Set()
-  return String(batchTagText.value || '')
-    .split(/[\s,]+/)
-    .map((tag) => tag.trim().toLowerCase().replace(/\s+/g, '_'))
+  return (batchTags.value || [])
+    .map((tag) => String(tag).trim().toLowerCase().replace(/\s+/g, '_'))
     .filter((tag) => {
       if (!tag || seen.has(tag)) return false
       seen.add(tag)
