@@ -184,14 +184,17 @@ async function selectPost(post, kind) {
   try {
     if (kind === 'image') {
       setStatus('Inserting image…', 'working')
-      await copyImageToClipboard(url)
+      const copied = await copyImageToClipboard(url)
+      const clipboardText = copied === 'image' ? 'The image is also on the clipboard.' : 'Only the link could go on the clipboard.'
       const pasteResult = await pasteMediaFileToSourceTab(post, url, kind)
       if (pasteResult.ok) {
         const pasteText = pasteResult.method === 'file-input' ? 'attached through X upload' : 'sent to the editor'
         const sizeText = pasteResult.fileSize ? ` (${formatBytes(pasteResult.fileSize)})` : ''
-        setStatus(`Image ${pasteText}${sizeText}. Image bytes are also on the clipboard.`, 'success')
+        setStatus(`Image ${pasteText}${sizeText}. ${clipboardText}`, 'success')
       } else {
-        setStatus(`Image bytes copied to clipboard. Paste it into your post.${pasteResult.error ? ` (${pasteResult.error})` : ''}`, 'success')
+        // Stay open: this is the message that says why nothing appeared.
+        setStatus(`Could not insert it into the page${pasteResult.error ? ` (${pasteResult.error})` : ''}. ${copied === 'image' ? 'The image is on the clipboard - press Ctrl+V in the message box.' : clipboardText}`, 'error')
+        return
       }
     } else {
       setStatus(`Pasting ${kind} file and downloading…`, 'working')
@@ -259,24 +262,28 @@ async function copyImageToClipboard(url) {
   // The Clipboard API only reliably accepts PNG, so normalise everything else.
   const png = blob.type === 'image/png' ? blob : await toPng(blob)
   const html = `<img src="${escapeHtml(url)}" alt="">`
-  const item = new ClipboardItem({
-    'image/png': png,
-    'text/html': new Blob([html], { type: 'text/html' }),
-    'text/plain': new Blob([url], { type: 'text/plain' }),
-    'text/uri-list': new Blob([url], { type: 'text/uri-list' }),
-  })
-
-  try {
-    await navigator.clipboard.write([item])
-  } catch (e) {
-    // Keep the action useful even if the browser/editor rejects binary image
-    // clipboard data. Pasting the URL still lets the user attach or embed it.
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(url)
-      return
+  // Chromium's async clipboard writes only image/png, text/html and
+  // text/plain. Asking for anything else (text/uri-list used to be here) fails
+  // the whole write, which left just the link on the clipboard.
+  const attempts = [
+    { 'image/png': png, 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([url], { type: 'text/plain' }) },
+    { 'image/png': png },
+  ]
+  let lastError = null
+  for (const parts of attempts) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem(parts)])
+      return 'image'
+    } catch (e) {
+      lastError = e
     }
-    throw e
   }
+  // Last resort: the link still lets the user attach or embed it.
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(url)
+    return 'link'
+  }
+  throw lastError
 }
 
 async function copyMediaReferenceToClipboard(url, kind, localPath = '') {
