@@ -52,6 +52,13 @@ async def lifespan(app: FastAPI):
         from .services import booru_search
 
         await booru_search.close_media_client()
+        from . import database
+        from .services.app_restart import exit_if_restarting, restart_pending
+
+        if restart_pending():
+            # Close the database cleanly; the process ends without the usual teardown.
+            await database.engine.dispose()
+            exit_if_restarting()
 
 
 app = FastAPI(

@@ -116,7 +116,7 @@ from app.ai_runtime_link import link_ai_runtime
 link_ai_runtime()
 
 from app.config import settings
-from app.services.app_restart import register_restart_handler
+from app.services.app_restart import exit_when_server_stops, register_restart_handler
 
 
 def _python_executable() -> str:
@@ -174,6 +174,7 @@ if __name__ == "__main__":
             _python_executable(),
             str(os.getpid()),
         ])
+        exit_when_server_stops()
         server.should_exit = True
         return {
             "status": "restarting",

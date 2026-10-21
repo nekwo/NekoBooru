@@ -22,7 +22,7 @@ from app.config import settings
 from app.main import app
 from app.runtime_paths import runtime_paths
 from app.system_tray import start_windows_tray
-from app.services.app_restart import register_restart_handler
+from app.services.app_restart import exit_when_server_stops, register_restart_handler
 
 _INSTANCE_LOCK_FILE = None
 _AI_WORKER_PROCESS = None
@@ -448,6 +448,10 @@ def main():
             return {"status": "restarting", "message": "Restart is already in progress."}
         restart_requested = True
         _spawn_restart_waiter()
+        if tray is not None:
+            # The restart exit skips the finally below; take the icon down with it.
+            atexit.register(tray.stop)
+        exit_when_server_stops()
         server.should_exit = True
         return {
             "status": "restarting",
