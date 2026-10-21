@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +38,12 @@ EARLY_FAILURE_LIMIT = 10
 _SKIP_ERRORS = {"images_disabled", "videos_disabled", "unsupported_media_type"}
 # Target mode: the whole library through every model that can run.
 EVERYTHING_MODE = "everything"
+# Tags that name where one copy came from (gelbooru_123, twitter_456,
+# twitter_user_name), not what the image shows. A near-duplicate's copy has its
+# own, so inheriting them would label an X upload as that Gelbooru post.
+_SOURCE_ID_TAG = re.compile(
+    r"^(?:(?:danbooru|e621|moebooru|gelbooru|safebooru|sankaku|pixiv|twitter)_\d+|twitter_user_.+)$"
+)
 
 
 class NoModelOutput(RuntimeError):
@@ -127,7 +135,8 @@ async def _tag_media_async(path: Path, opts: AutoTagOptions):
 
 
 async def _inherit_tags_from_similar(
-    db, phash: str, exclude_id: int | None, opts: AutoTagOptions, owner_id: int | None = None
+    db, phash: str, exclude_id: int | None, opts: AutoTagOptions, owner_id: int | None = None,
+    size: tuple[int, int] | None = None,
 ) -> tuple[list[str], dict]:
     """Return (tags, evidence) from library posts with a near-identical perceptual hash.
 
@@ -157,17 +166,17 @@ async def _inherit_tags_from_similar(
     # Only id and hash for the scan: loading every post with its tags made
     # each preview hydrate the whole library (~8k posts, ~340k tag rows) to
     # find the handful within reach. Tags load for those near matches only.
-    hashes = (await db.execute(select(Post.id, Post.phash).where(*conditions))).all()
+    hashes = (await db.execute(select(Post.id, Post.phash, Post.width, Post.height).where(*conditions))).all()
 
     max_dist = opts.inheritSimilarMaxDistance
     min_tags = opts.inheritSimilarMinTags
     near: dict[int, int] = {}
-    for post_id, post_phash in hashes:
+    for post_id, post_phash, width, height in hashes:
         try:
             dist = bin(target_int ^ int(post_phash, 16)).count("1")
         except (TypeError, ValueError):
             continue
-        if dist <= max_dist:
+        if dist <= max_dist and _same_shape(size, (width, height)):
             near[post_id] = dist
 
     tags_by_post: dict[int, list[str]] = {post_id: [] for post_id in near}
@@ -188,6 +197,8 @@ async def _inherit_tags_from_similar(
             continue
         matched.append({"id": post_id, "distance": dist, "tagCount": len(post_tag_names)})
         for name in post_tag_names:
+            if _SOURCE_ID_TAG.match(name):
+                continue
             tag_votes[name] = tag_votes.get(name, 0) + 1
 
     if not matched:
@@ -202,8 +213,19 @@ async def _inherit_tags_from_similar(
     return inherited, evidence
 
 
+def _same_shape(a: tuple[int, int] | None, b: tuple[int, int] | None) -> bool:
+    # A dHash is only 64 bits, and smooth or gradient-heavy pictures share most
+    # of them: a landscape Gelbooru post and a portrait X photo landed 8 bits
+    # apart. Copies of one picture keep its shape, so a different aspect ratio
+    # (or an unknown one) is a different picture.
+    if not a or not b or not all(a) or not all(b):
+        return False
+    return abs(math.log((a[0] / a[1]) / (b[0] / b[1]))) < 0.05
+
+
 async def merge_similar_post_tags(
-    db, result, phash: str | None, exclude_id: int | None, opts: AutoTagOptions, owner_id: int | None = None
+    db, result, phash: str | None, exclude_id: int | None, opts: AutoTagOptions, owner_id: int | None = None,
+    size: tuple[int, int] | None = None,
 ) -> None:
     """Fold near-duplicate posts' tags into ``result`` in place.
 
@@ -213,7 +235,7 @@ async def merge_similar_post_tags(
     if not (opts.enabled and opts.inheritSimilarTags and phash):
         return
     inherited_tags, inherited_evidence = await _inherit_tags_from_similar(
-        db, phash, exclude_id, opts, owner_id=owner_id
+        db, phash, exclude_id, opts, owner_id=owner_id, size=size
     )
     if not inherited_tags:
         return
@@ -421,7 +443,9 @@ async def analyze_and_maybe_apply(db, post: Post, *, opts: AutoTagOptions, job: 
         ))
         raise NoModelOutput(result.error)
 
-    await merge_similar_post_tags(db, result, post.phash, post.id, opts, owner_id=post.owner_id)
+    await merge_similar_post_tags(
+        db, result, post.phash, post.id, opts, owner_id=post.owner_id, size=(post.width, post.height)
+    )
 
     merged_tags, categories = merge_with_existing(existing_tags, result, opts)
     suggested_safety = promote_safety(post.safety or "safe", result.safety, opts)
@@ -464,7 +488,9 @@ async def preview_post(post_id: int, overrides: dict | None = None) -> dict:
         from ..config import settings
         result = await _tag_media_async(settings.posts_dir / post.content_path, opts)
 
-        await merge_similar_post_tags(db, result, post.phash, post.id, opts, owner_id=post.owner_id)
+        await merge_similar_post_tags(
+            db, result, post.phash, post.id, opts, owner_id=post.owner_id, size=(post.width, post.height)
+        )
 
         existing_tags = [tag.name for tag in (post.tags or [])]
         merged_tags, categories = merge_with_existing(existing_tags, result, opts)

@@ -135,6 +135,58 @@ class AutoTagBulkJobApiTests(support.AutoTagApiTestCase):
         self.assertEqual(after["safety"], "unsafe")
         self.assertEqual(self.client.get(f"/api/posts/{light['id']}").json()["safety"], "unsafe")
 
+    def test_near_duplicate_inheritance_skips_the_other_copy_source_ids(self):
+        self._enable_auto_tags()
+        # Flat images all hash alike, so the two posts are near-duplicates.
+        self._upload_image_post(tags=[
+            "gelbooru_14244262", "twitter_2112787051968172404", "twitter_user_someone", "itsumi_erika",
+        ])
+        target = self._upload_image_post()
+
+        with patch("app.services.auto_tag_jobs.tag_media", return_value=self._fake_result()), \
+                patch("app.services.auto_tag_jobs._model_unready", return_value=None):
+            response = self.client.post(
+                "/api/auto-tags/jobs",
+                json={"mode": "selected", "dryRun": False, "postIds": [target["id"]],
+                      "settings": {"inheritSimilarTags": True}},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self._wait_for_job(response.json()["id"])
+
+        tags = self.client.get(f"/api/posts/{target['id']}").json()["tags"]
+        self.assertIn("itsumi_erika", tags)
+        for source_id in ("gelbooru_14244262", "twitter_2112787051968172404", "twitter_user_someone"):
+            self.assertNotIn(source_id, tags)
+
+    def test_near_hash_of_a_different_shape_is_not_inherited_from(self):
+        from pathlib import Path
+
+        from PIL import Image
+
+        self._enable_auto_tags()
+        # Flat images hash alike at any size; only the shape tells these apart.
+        portrait = Path(self.tmp.name) / f"portrait-{time.time_ns()}.png"
+        Image.new("RGB", (32, 48), (40, 50, 60)).save(portrait)
+        created = self.client.post("/api/posts", json={
+            "contentToken": self._upload_specific_image_token(portrait),
+            "tags": ["portrait_only_tag"], "safety": "safe", "autoTag": False,
+        })
+        self.assertEqual(created.status_code, 200, created.text)
+        target = self._upload_image_post()  # 32x32
+
+        with patch("app.services.auto_tag_jobs.tag_media", return_value=self._fake_result()), \
+                patch("app.services.auto_tag_jobs._model_unready", return_value=None):
+            response = self.client.post(
+                "/api/auto-tags/jobs",
+                json={"mode": "selected", "dryRun": False, "postIds": [target["id"]],
+                      "settings": {"inheritSimilarTags": True}},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self._wait_for_job(response.json()["id"])
+
+        tags = self.client.get(f"/api/posts/{target['id']}").json()["tags"]
+        self.assertNotIn("portrait_only_tag", tags)
+
 
 if __name__ == "__main__":
     unittest.main()

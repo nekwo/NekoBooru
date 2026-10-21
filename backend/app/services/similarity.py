@@ -45,6 +45,14 @@ def compute_dhash(path: Path) -> str | None:
         return None
 
 
+def image_size(path: Path) -> tuple[int, int] | None:
+    try:
+        with Image.open(path) as img:
+            return img.size
+    except Exception:  # noqa: BLE001 - not an image Pillow reads
+        return None
+
+
 def phash_for_media(content_path: Path, thumb_path: Path | None, extension: str) -> str | None:
     """Hash the original for images/gifs; for videos hash the generated thumb."""
     ext = (extension or "").lower()

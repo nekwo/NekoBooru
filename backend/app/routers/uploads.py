@@ -173,7 +173,7 @@ async def auto_tags_for_upload(token: str, current_user: User = Depends(get_curr
 async def _compute_auto_tag_preview(temp_path: Path, request: UploadAutoTagPreviewRequest, owner_id: int) -> dict:
     from ..services.auto_tag_jobs import _tag_media_async, merge_similar_post_tags
     from ..services.auto_tagger import load_options, merge_with_existing, promote_safety, validate_options
-    from ..services.similarity import compute_dhash
+    from ..services.similarity import compute_dhash, image_size
 
     opts = validate_options({**load_options().__dict__, **(request.settings or {})})
     result = await _tag_media_async(temp_path, opts)
@@ -183,7 +183,8 @@ async def _compute_auto_tag_preview(temp_path: Path, request: UploadAutoTagPrevi
         if phash:
             from ..database import async_session
             async with async_session() as db:
-                await merge_similar_post_tags(db, result, phash, None, opts, owner_id=owner_id)
+                size = await asyncio.to_thread(image_size, temp_path)
+                await merge_similar_post_tags(db, result, phash, None, opts, owner_id=owner_id, size=size)
 
     merged_tags, categories = merge_with_existing(request.tags or [], result, opts)
 

@@ -307,7 +307,7 @@ class AutoTagOptions:
     excludedTags: list[str] = field(default_factory=list)
     keywordRules: list[dict] = field(default_factory=list)
     inheritSimilarTags: bool = True
-    inheritSimilarMaxDistance: int = 8
+    inheritSimilarMaxDistance: int = 4
     inheritSimilarMinTags: int = 1
 
 

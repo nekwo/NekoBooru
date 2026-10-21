@@ -106,7 +106,7 @@ def validate_options(raw: dict) -> AutoTagOptions:
         data["excludedTags"] = []
     if not isinstance(data["keywordRules"], list):
         data["keywordRules"] = []
-    data["inheritSimilarMaxDistance"] = min(64, max(0, int(data.get("inheritSimilarMaxDistance") or 8)))
+    data["inheritSimilarMaxDistance"] = min(64, max(0, int(data.get("inheritSimilarMaxDistance") or 4)))
     data["inheritSimilarMinTags"] = min(50, max(0, int(data.get("inheritSimilarMinTags") or 1)))
     return AutoTagOptions(**data)
 
