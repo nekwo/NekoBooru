@@ -25,7 +25,7 @@ describe('createInLibraryLookup', () => {
     await vi.advanceTimersByTimeAsync(50)
     await Promise.all([first, second])
     expect(api.lookupInLibrary).toHaveBeenCalledTimes(1)
-    expect(api.lookupInLibrary).toHaveBeenCalledWith(['danbooru:1', 'danbooru:2', 'e621:3'])
+    expect(api.lookupInLibrary).toHaveBeenCalledWith(['danbooru:1', 'danbooru:2', 'e621:3'], {})
     expect(lookup.found.get('danbooru:1')).toEqual({ postId: 42 })
     expect(lookup.found.has('danbooru:2')).toBe(false)
   })
@@ -81,10 +81,23 @@ describe('createInLibraryLookup', () => {
     await expect(lookup.lookupNow('danbooru:1')).resolves.toEqual({ postId: 42 })
     await expect(lookup.lookupNow('danbooru:2')).resolves.toBeNull()
     expect(api.lookupInLibrary).toHaveBeenCalledTimes(2)
-    expect(api.lookupInLibrary).toHaveBeenLastCalledWith(['danbooru:2'])
+    expect(api.lookupInLibrary).toHaveBeenLastCalledWith(['danbooru:2'], {})
     await expect(lookup.lookupNow('nekobooru:2')).resolves.toBeNull()
     const broken = createInLibraryLookup({ lookupInLibrary: vi.fn().mockRejectedValue(new Error('x')) })
     await expect(broken.lookupNow('danbooru:1')).rejects.toThrow('x')
+  })
+
+  it('sends each key MD5 so a copy from another booru is found', async () => {
+    const api = fakeApi()
+    const lookup = createInLibraryLookup(api)
+    const md5 = 'A'.repeat(32)
+    await Promise.all([
+      lookup.lookup(['gelbooru:7', 'sankaku:x'], { 'gelbooru:7': md5, 'sankaku:x': 'not-an-md5' }),
+      vi.advanceTimersByTimeAsync(COALESCE_MS),
+    ])
+    expect(api.lookupInLibrary).toHaveBeenCalledWith(['gelbooru:7', 'sankaku:x'], { 'gelbooru:7': 'a'.repeat(32) })
+    await lookup.lookupNow('e621:9', 'b'.repeat(32))
+    expect(api.lookupInLibrary).toHaveBeenLastCalledWith(['e621:9'], { 'e621:9': 'b'.repeat(32) })
   })
 
   it('mark() records an import and stops later lookups of that key', async () => {

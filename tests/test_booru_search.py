@@ -120,6 +120,9 @@ class BooruSearchTests(unittest.TestCase):
                 os.environ[key] = value
         cls.tmp.cleanup()
 
+    # Files imported from one booru, for matching another booru's copy by MD5.
+    SEED_MD5S = {"a_danbooru": "d" * 32, "a_sankaku_deleted": "f" * 32, "b_e621": "e" * 32}
+
     @classmethod
     def _seed_library(cls) -> dict:
         from app.database import async_session
@@ -147,6 +150,7 @@ class BooruSearchTests(unittest.TestCase):
                         file_size=1,
                         owner_id=owner_id,
                         deleted_at=datetime.utcnow() if deleted else None,
+                        md5=cls.SEED_MD5S.get(label),
                     )
                     session.add(post)
                     await session.flush()
@@ -480,6 +484,22 @@ class BooruSearchTests(unittest.TestCase):
             self.assertNotIn("sankaku:abc", found)
         finally:
             self.member.put("/api/auth/shares", json={"granteeUsernames": []})
+
+    def test_in_library_lookup_matches_another_booru_copy_by_md5(self):
+        keys = ["gelbooru:77", "gelbooru:78", "gelbooru:79", "safebooru:80", "danbooru:1"]
+        md5s = {
+            "gelbooru:77": "D" * 32,      # a_danbooru's file, upper-cased by the booru
+            "gelbooru:78": "e" * 32,      # the member's file: not visible to admin
+            "gelbooru:79": "f" * 32,      # a deleted post's file
+            "safebooru:80": "not-a-md5",
+            "danbooru:1": "0" * 32,       # its own id tag already answers
+        }
+        resp = self.admin.post("/api/booru-search/in-library", json={"keys": keys, "md5s": md5s})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json(), {"found": {
+            "gelbooru:77": {"postId": self.posts["a_danbooru"]},
+            "danbooru:1": {"postId": self.posts["a_danbooru"]},
+        }})
 
     def test_in_library_lookup_limits(self):
         empty = self.admin.post("/api/booru-search/in-library", json={"keys": []})

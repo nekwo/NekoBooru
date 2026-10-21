@@ -54,6 +54,7 @@ MAX_PAGE = 500
 DAPI_PAGE_SIZE = 42  # Gelbooru's and Safebooru's own page size, the relays' default limit
 MAX_LIMIT = 100
 MAX_LOOKUP_KEYS = 500
+_MD5 = re.compile(r"[0-9a-f]{32}")
 LOOKUP_CHUNK = 200
 MAX_CATEGORY_TAGS = 500
 
@@ -252,8 +253,11 @@ async def in_library_lookup(
     keys: list[str],
     owner_ids: list[int],
     *,
+    md5s: dict[str, str] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> dict:
+    """Keys first by their own ``<site>_<id>`` tag, then the rest by file MD5:
+    a Gelbooru result is in the library when it was imported from Danbooru."""
     if not keys:
         raise ValueError("No keys to look up")
     if len(keys) > MAX_LOOKUP_KEYS:
@@ -281,6 +285,26 @@ async def in_library_lookup(
         )
         for name, post_id in result.all():
             for key in keys_by_tag.get(name, []):
+                found[key] = {"postId": int(post_id)}
+
+    keys_by_md5: dict[str, list[str]] = {}
+    for key in keys:
+        md5 = str((md5s or {}).get(key) or "").lower()
+        if key not in found and _MD5.fullmatch(md5):
+            keys_by_md5.setdefault(md5, []).append(key)
+    hashes = list(keys_by_md5)
+    for offset in range(0, len(hashes), LOOKUP_CHUNK):
+        result = await db.execute(
+            select(Post.md5, func.min(Post.id))
+            .where(
+                Post.md5.in_(hashes[offset:offset + LOOKUP_CHUNK]),
+                Post.owner_id.in_(owner_ids),
+                Post.deleted_at.is_(None),
+            )
+            .group_by(Post.md5)
+        )
+        for md5, post_id in result.all():
+            for key in keys_by_md5.get(md5, []):
                 found[key] = {"postId": int(post_id)}
     return {"found": found}
 

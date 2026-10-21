@@ -54,7 +54,7 @@ export function useBooruPostImport({ post, context = null, api = defaultApi, ada
       libraryPostId.value = key ? context?.libraryIdFor(key) ?? null : null
       if (!key) return
       try {
-        const found = await lookup.lookupNow(key)
+        const found = await lookup.lookupNow(key, post.value?.md5)
         if (found?.postId && post.value?.key === key) libraryPostId.value = found.postId
       } catch {
         // The badge is a courtesy; an import still checks the library first.

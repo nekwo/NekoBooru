@@ -23,17 +23,20 @@ function sleep(ms) {
 
 /**
  * createInLibraryLookup(api)
- *   -> { found, lookup(keys): Promise<void>, lookupNow(key): Promise<{postId}|null>, mark(key, postId), dispose() }
+ *   -> { found, lookup(keys, md5s?): Promise<void>, lookupNow(key, md5?): Promise<{postId}|null>, mark(key, postId), dispose() }
  *
  * `found` is a reactive Map<key, { postId }> holding only keys that are in
  * the library. `lookup` skips keys already asked (or known), waits
  * COALESCE_MS for more, then posts chunks of CHUNK_SIZE; its promise settles
  * when that batch is done and never rejects. `lookupNow` is for the import
  * queue: one key, no coalescing, no cache of a negative answer, errors thrown.
+ * `md5s` (key -> MD5 of the booru's original) lets the server also match a
+ * copy of the same file imported from another booru.
  */
 export function createInLibraryLookup(api, { delayMs = COALESCE_MS, chunkSize = CHUNK_SIZE, retryDelayMs = RETRY_DELAY_MS } = {}) {
   const found = reactive(new Map())
   const asked = new Set()
+  const md5ByKey = new Map()
   let pending = new Set()
   let waiters = []
   let timer = null
@@ -46,12 +49,22 @@ export function createInLibraryLookup(api, { delayMs = COALESCE_MS, chunkSize = 
     }
   }
 
+  function md5sFor(keys) {
+    const md5s = {}
+    for (const key of keys) if (md5ByKey.has(key)) md5s[key] = md5ByKey.get(key)
+    return md5s
+  }
+
+  function remember(key, md5) {
+    if (typeof md5 === 'string' && /^[0-9a-f]{32}$/i.test(md5)) md5ByKey.set(key, md5.toLowerCase())
+  }
+
   async function send(chunk) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (attempt) await sleep(retryDelayMs)
       if (disposed) return
       try {
-        const data = await api.lookupInLibrary(chunk)
+        const data = await api.lookupInLibrary(chunk, md5sFor(chunk))
         if (!disposed) record(data?.found)
         return
       } catch {
@@ -71,9 +84,10 @@ export function createInLibraryLookup(api, { delayMs = COALESCE_MS, chunkSize = 
     for (const resolve of settle) resolve()
   }
 
-  function lookup(keys) {
+  function lookup(keys, md5s = {}) {
     for (const key of keys || []) {
       if (!isRemoteKey(key) || asked.has(key) || found.has(key)) continue
+      remember(key, md5s?.[key])
       asked.add(key)
       pending.add(key)
     }
@@ -84,9 +98,10 @@ export function createInLibraryLookup(api, { delayMs = COALESCE_MS, chunkSize = 
     })
   }
 
-  async function lookupNow(key) {
+  async function lookupNow(key, md5) {
     if (!isRemoteKey(key)) return null
-    const data = await api.lookupInLibrary([key])
+    remember(key, md5)
+    const data = await api.lookupInLibrary([key], md5sFor([key]))
     asked.add(key)
     const value = data?.found?.[key]
     if (value) record({ [key]: value })

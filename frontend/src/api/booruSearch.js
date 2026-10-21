@@ -6,7 +6,8 @@ export const booruSearchApi = {
   async getBooruSearchStatus() { return request('/booru-search/status') },
   async searchGelbooru(params, signal) { return request(`/booru-search/gelbooru?${new URLSearchParams(params)}`, { signal }) },
   async searchSafebooru(params, signal) { return request(`/booru-search/safebooru?${new URLSearchParams(params)}`, { signal }) },
-  async lookupInLibrary(keys) { return request('/booru-search/in-library', { method: 'POST', body: JSON.stringify({ keys }) }) },
+  // md5s: key -> the booru's MD5 of its original, so a copy imported from another booru is found too.
+  async lookupInLibrary(keys, md5s = {}) { return request('/booru-search/in-library', { method: 'POST', body: JSON.stringify({ keys, md5s }) }) },
   async gelbooruTagCategories(tags) { return request('/booru-search/gelbooru-categories', { method: 'POST', body: JSON.stringify({ tags }) }) },
   // The plan calls this both as (tags, tagCategories) and as ({ tags, tagCategories }); accept either.
   async danbooruNames(tags, tagCategories) {

@@ -23,6 +23,8 @@ DEFAULT_RETRY_AFTER = 60
 
 class InLibraryRequest(BaseModel):
     keys: list[str] = []
+    # key -> the booru's MD5 of its original, for copies imported from another booru.
+    md5s: dict[str, str] = {}
 
 
 class GelbooruCategoriesRequest(BaseModel):
@@ -95,10 +97,11 @@ async def lookup_in_library(
     current_user: User = Depends(require_booru_search),
     db: AsyncSession = Depends(get_db),
 ):
-    """Which ``<site>:<id>`` keys already have a live post carrying the ``<site>_<id>`` tag."""
+    """Which ``<site>:<id>`` keys already have a live post: one carrying the
+    ``<site>_<id>`` tag, or else one whose file has the MD5 given for the key."""
     owner_ids = await visible_owner_ids(db, current_user)
     try:
-        return await booru_search.in_library_lookup(db, request.keys, owner_ids)
+        return await booru_search.in_library_lookup(db, request.keys, owner_ids, md5s=request.md5s)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

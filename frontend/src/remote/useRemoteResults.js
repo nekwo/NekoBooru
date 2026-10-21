@@ -285,7 +285,10 @@ export function useRemoteResults(config = {}) {
     }
     if (page === rt.wantedPage) show(site, rt, page)
     else updatePages(section, rt)
-    if (posts.length) Promise.resolve(lookup.lookup(posts.map((post) => post.key))).catch(() => {})
+    if (posts.length) {
+      const md5s = Object.fromEntries(posts.filter((post) => post.md5).map((post) => [post.key, post.md5]))
+      Promise.resolve(lookup.lookup(posts.map((post) => post.key), md5s)).catch(() => {})
+    }
   }
 
   function show(site, rt, page) {
