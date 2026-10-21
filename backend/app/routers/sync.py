@@ -27,7 +27,7 @@ from ..config import settings
 from ..dependencies import get_current_user
 from ..models import Post, Tag, Pool, PoolPost, Note, Comment, Favorite, SyncLog, User
 from ..models.post import PostTag
-from ..utils.hashing import calculate_sha256
+from ..utils.hashing import calculate_md5, calculate_sha256
 from ..services.media import get_media_info, create_thumbnail, move_to_storage
 from .posts import process_tags_for_post
 from .uploads import get_upload_path, remove_upload_token
@@ -287,6 +287,7 @@ async def _apply_post(db: AsyncSession, ch: PushChange, owner_id: int) -> dict:
             return {"clientId": ch.clientId, "type": "post", "status": "error",
                     "message": "Invalid or expired content token"}
         sha256 = calculate_sha256(temp_path)
+        md5 = calculate_md5(temp_path)
         existing = await _post_by_sha(db, sha256, owner_id=owner_id)
         if existing:
             # Dedup: same content already present in *this user's* library.
@@ -328,6 +329,7 @@ async def _apply_post(db: AsyncSession, ch: PushChange, owner_id: int) -> dict:
             duration=media_info.get("duration"),
             safety=ch.safety or "safe",
             source=ch.source,
+            md5=md5,
         )
         db.add(post)
         await db.flush()

@@ -12,7 +12,7 @@ from ..dependencies import get_current_user
 from ..models import Post, Tag, TagCategory, Favorite, User
 from ..models.post import PostTag, tag_detail_dict
 from ..services.auth import visible_owner_ids
-from ..utils.hashing import calculate_sha256
+from ..utils.hashing import calculate_md5, calculate_sha256
 from ..services.media import (
     get_media_info,
     create_thumbnail,
@@ -147,6 +147,7 @@ async def create_post(
     try:
         # Calculate file hash
         sha256 = calculate_sha256(temp_path)
+        md5 = calculate_md5(temp_path)
 
         # Check for duplicate within what this user can see
         existing_post = await _post_by_sha256(db, sha256, owner_ids=owner_ids)
@@ -215,6 +216,7 @@ async def create_post(
             safety=final_safety,
             source=request.source,
             phash=phash,
+            md5=md5,
         )
         db.add(post)
         try:

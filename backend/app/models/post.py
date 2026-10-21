@@ -76,6 +76,10 @@ class Post(Base):
     # 64-bit perceptual hash (dHash) as 16-char hex, for near-duplicate
     # detection and "find similar". Null = not yet computed; "" = unhashable.
     phash = Column(String(16), nullable=True, index=True)
+    # MD5 of the stored file, the id every booru publishes for its originals,
+    # so a search result on one booru is matched to a copy imported from
+    # another. Null = not yet computed; "" = file unreadable.
+    md5 = Column(String(32), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     # Soft-delete marker so deletions can propagate through sync (tombstone).

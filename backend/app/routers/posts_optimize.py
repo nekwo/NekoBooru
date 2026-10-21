@@ -23,7 +23,7 @@ from ..database import async_session, get_db
 from ..config import settings
 from ..dependencies import get_current_user
 from ..models import Post, Tag, User
-from ..utils.hashing import calculate_sha256
+from ..utils.hashing import calculate_md5, calculate_sha256
 from ..services.media import create_thumbnail, get_media_info, optimize_media_to_temp
 from ..services.tagging import process_tags_for_post as apply_tags_for_post
 
@@ -397,6 +397,7 @@ async def _bulk_optimize_posts_impl(
                 continue
 
             new_sha = calculate_sha256(optimized_path)
+            new_md5 = calculate_md5(optimized_path)
             expected_sha = optimized_result.get("expectedSha256")
             if expected_sha and new_sha != expected_sha:
                 optimized_path.unlink(missing_ok=True)
@@ -498,6 +499,7 @@ async def _bulk_optimize_posts_impl(
                     safety=post.safety,
                     source=post.source,
                     phash=new_phash,
+                    md5=new_md5,
                 )
                 db.add(new_post)
                 await db.flush()
@@ -529,6 +531,7 @@ async def _bulk_optimize_posts_impl(
                 post.filename = f"{Path(post.filename).stem}{output_extension}"
                 post.extension = output_extension
             post.phash = new_phash
+            post.md5 = new_md5
             post.updated_at = datetime.utcnow()
 
             if old_file_path != new_file_path:

@@ -119,6 +119,11 @@ def _migrate(conn):
             "CREATE INDEX IF NOT EXISTS ix_posts_phash ON posts(phash)"
         )
 
+    # Booru-style file id; content_md5.backfill_md5s() fills existing rows.
+    if not _column_exists(conn, "posts", "md5"):
+        conn.exec_driver_sql("ALTER TABLE posts ADD COLUMN md5 VARCHAR(32)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_posts_md5 ON posts(md5)")
+
     # Stable cross-device uuids on pools/notes/comments (+ backfill existing rows).
     for table in ("pools", "notes", "comments"):
         if not _column_exists(conn, table, "uuid"):

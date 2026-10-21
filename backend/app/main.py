@@ -41,14 +41,18 @@ async def lifespan(app: FastAPI):
     await ytdlp_manager.maybe_update_on_startup()
     await upload_job_service.recover_and_cleanup()
     cleanup_task = asyncio.create_task(upload_job_service.cleanup_loop())
+    from .services import content_md5
+
+    md5_task = asyncio.create_task(content_md5.run_backfill())
     try:
         yield
     finally:
-        cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+        for task in (cleanup_task, md5_task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         from .services import booru_search
 
         await booru_search.close_media_client()
