@@ -64,14 +64,15 @@
     return { ...meta, ...traceMoeSceneDescription(meta), seriesTitles }
   }
 
-  // The matched show's names as the info pane lists them: the heading (native
-  // title), the romaji line under it, then every line of the "Alias" row.
+  // The matched show's names as the info pane lists them: the title (native),
+  // the romaji subtitle under it, then every line of the "Alias" row. Older
+  // builds used heading tags, newer ones "_title" / "_subtitle" divs.
   function infoPaneTitles() {
     const pane = document.querySelector('[class*="_infoPane"]')
     if (!pane) return []
     const lines = (el) => (el?.innerText || el?.textContent || '').split('\n').map((s) => s.trim()).filter(Boolean)
     const titles = []
-    pane.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => titles.push(...lines(heading)))
+    pane.querySelectorAll('h1, h2, h3, h4, h5, h6, [class*="_title"], [class*="_subtitle"]').forEach((heading) => titles.push(...lines(heading)))
     const aliasLabel = Array.from(pane.querySelectorAll('td, th, dt, div, span'))
       .find((el) => el.children.length === 0 && el.textContent.trim().toLowerCase() === 'alias')
     const aliasCell = aliasLabel?.nextElementSibling || aliasLabel?.parentElement?.nextElementSibling
