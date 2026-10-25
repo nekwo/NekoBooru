@@ -7,6 +7,10 @@
 // The player also names the release file the match came from, which usually
 // carries the show, season and episode. That and the clip's scene timestamps
 // ride along to the popup, which saves them as the post's semantic description.
+//
+// The site's CSS-module classes are hashed and their shape changes between
+// builds ("Main__actionBar" became "tMXrHW_actionBar"), so selectors match only
+// the "_<name>" suffix.
 
 (() => {
   const BUTTON_CLASS = 'nekobooru-trace-download'
@@ -33,7 +37,7 @@
   // trace.moe itself is stateless, so its address bar is no use as a source.
   // The info pane links the matched show on AniList; fall back to the clip.
   function sourcePageUrl(videoUrl) {
-    const anilist = document.querySelector('[class*="__infoPane"] a[href*="anilist.co/anime/"]')
+    const anilist = document.querySelector('[class*="_infoPane"] a[href*="anilist.co/anime/"]')
       || document.querySelector('a[href*="anilist.co/anime/"]')
     return anilist?.href || videoUrl
   }
@@ -54,7 +58,7 @@
   }
 
   async function sceneMetadata(src) {
-    const filename = document.querySelector('[class*="__fileNameDisplay"]')?.textContent?.trim() || ''
+    const filename = document.querySelector('[class*="_fileNameDisplay"]')?.textContent?.trim() || ''
     const meta = { ...parseTraceMoeFilename(filename), ...(await sceneTimes(src)) }
     const seriesTitles = [...infoPaneTitles(), meta.title].filter(Boolean)
     return { ...meta, ...traceMoeSceneDescription(meta), seriesTitles }
@@ -63,7 +67,7 @@
   // The matched show's names as the info pane lists them: the heading (native
   // title), the romaji line under it, then every line of the "Alias" row.
   function infoPaneTitles() {
-    const pane = document.querySelector('[class*="__infoPane"]')
+    const pane = document.querySelector('[class*="_infoPane"]')
     if (!pane) return []
     const lines = (el) => (el?.innerText || el?.textContent || '').split('\n').map((s) => s.trim()).filter(Boolean)
     const titles = []
@@ -99,7 +103,7 @@
   }
 
   function injectButton() {
-    const actionBar = document.querySelector('[class*="__actionBar"]')
+    const actionBar = document.querySelector('[class*="_actionBar"]')
     if (!actionBar || actionBar.querySelector('.' + BUTTON_CLASS)) return
     const share = shareControl(actionBar)
     const button = document.createElement('button')
